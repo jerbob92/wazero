@@ -152,7 +152,7 @@ func (v *InvokeFunc) Call(ctx context.Context, mod api.Module, stack []uint64) {
 		// JS implementation, which checks if the error is not a number, which
 		// is what the JS implementation throws (Infinity for
 		// _emscripten_throw_longjmp, a memory address for C++ exceptions).
-		if !errors.Is(err, ThrowLongjmpError) {
+		if !errors.Is(err, ThrowLongjmpError) && !errors.Is(err, &cppException{}) {
 			panic(err)
 		}
 

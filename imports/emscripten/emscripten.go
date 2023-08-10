@@ -104,16 +104,68 @@ func NewFunctionExporterForModule(guest wazero.CompiledModule) (FunctionExporter
 			ret = append(ret, internal.NotifyMemoryGrowth)
 			continue
 		}
+
+		// Emscripten invoke/longjmp support.
 		if importName == internal.FunctionThrowLongjmp {
 			ret = append(ret, internal.ThrowLongjmp)
 			continue
 		}
-		if !strings.HasPrefix(importName, internal.InvokePrefix) {
-			continue // not invoke, and maybe not emscripten
+		if strings.HasPrefix(importName, internal.InvokePrefix) {
+			hf := internal.NewInvokeFunc(importName, fn.ParamTypes(), fn.ResultTypes())
+			ret = append(ret, hf)
 		}
 
-		hf := internal.NewInvokeFunc(importName, fn.ParamTypes(), fn.ResultTypes())
-		ret = append(ret, hf)
+		// Emscripten C++ exception support.
+		if importName == internal.FunctionCxaThrow {
+			ret = append(ret, internal.CxaThrow)
+			continue
+		}
+		if importName == internal.FunctionLlvmEhTypeidFor {
+			ret = append(ret, internal.LlvmEhTypeidFor)
+			continue
+		}
+		if importName == internal.FunctionCxaBeginCatch {
+			ret = append(ret, internal.CxaBeginCatch)
+			continue
+		}
+		if importName == internal.FunctionCxaEndCatch {
+			ret = append(ret, internal.CxaEndCatch)
+			continue
+		}
+		if importName == internal.FunctionResumeException {
+			ret = append(ret, internal.ResumeException)
+			continue
+		}
+		if importName == internal.FunctionCxaRethrow {
+			ret = append(ret, internal.CxaRethrow)
+			continue
+		}
+		if importName == internal.FunctionCxaUncaughtExceptions {
+			ret = append(ret, internal.CxaUncaughtExceptions)
+			continue
+		}
+		if importName == internal.FunctionCxaGetExceptionPtr {
+			ret = append(ret, internal.CxaGetExceptionPtr)
+			continue
+		}
+		if importName == internal.FunctionCxaCallUnexpected {
+			ret = append(ret, internal.CxaCallUnexpected)
+			continue
+		}
+		if importName == internal.FunctionCxaCurrentPrimaryException {
+			ret = append(ret, internal.CxaCurrentPrimaryException)
+			continue
+		}
+		if importName == internal.FunctionCxaRethrowPrimaryException {
+			ret = append(ret, internal.CxaRethrowPrimaryException)
+			continue
+		}
+		if strings.HasPrefix(importName, internal.FindMatchingCatchPrefix) {
+			hf := internal.NewFindMatchingCatchFunc(importName, fn.ParamTypes(), fn.ResultTypes())
+			ret = append(ret, hf)
+		}
+
+		// Not invoke, and maybe not Emscripten.
 	}
 	return ret, nil
 }
