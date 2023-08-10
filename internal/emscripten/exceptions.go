@@ -58,44 +58,72 @@ func newCppException(ctx context.Context, mod api.Module, excPtr int32) (*cppExc
 	}
 
 	// Get the exception type and message if we have the tools to do so.
-	if mod.ExportedFunction("malloc") != nil && mod.ExportedFunction("__get_exception_message") != nil {
-		exceptionAddressesRes, err := mod.ExportedFunction("malloc").Call(ctx, 8)
-		if err != nil {
-			return nil, err
-		}
-
-		_, err = mod.ExportedFunction("__get_exception_message").Call(ctx, api.EncodeI32(excPtr), exceptionAddressesRes[0], exceptionAddressesRes[0]+4)
-		if err != nil {
-			return nil, err
-		}
-
-		typeAddr, ok := mod.Memory().ReadUint32Le(uint32(exceptionAddressesRes[0]))
-		if !ok {
-			return nil, errors.New("could not read typeAddr from memory")
-		}
-
-		messageAddr, ok := mod.Memory().ReadUint32Le(uint32(exceptionAddressesRes[0] + 4))
-		if !ok {
-			return nil, errors.New("could not read messageAddr from memory")
-		}
-
-		typeString, err := readCString(mod, typeAddr)
-		mod.ExportedFunction("free").Call(ctx, api.EncodeU32(typeAddr))
-		if err != nil {
-			return nil, err
-		}
-
-		exception.name = typeString
-
-		if messageAddr > 0 {
-			messageString, err := readCString(mod, messageAddr)
-			mod.ExportedFunction("free").Call(ctx, api.EncodeU32(messageAddr))
+	if mod.ExportedFunction("malloc") != nil && mod.ExportedFunction("free") != nil && mod.ExportedFunction("__get_exception_message") != nil {
+		name, message, err := func(ptr int32) (string, string, error) {
+			savedStack, err := mod.ExportedFunction("stackSave").Call(ctx)
 			if err != nil {
-				return nil, err
+				return "", "", err
 			}
 
-			exception.message = messageString
+			defer func() {
+				_, err := mod.ExportedFunction("stackRestore").Call(ctx, savedStack[0])
+				if err != nil {
+					panic(err)
+				}
+			}()
+
+			// Allocate 8 bytes, 4 for the address to the type, 4 for the address
+			// to the message.
+			exceptionAddressesRes, err := mod.ExportedFunction("malloc").Call(ctx, 8)
+			if err != nil {
+				return "", "", err
+			}
+
+			// Let Emscripten allocate the strings for the type and message and set
+			// the addresses to the allocated bytes.
+			_, err = mod.ExportedFunction("__get_exception_message").Call(ctx, api.EncodeI32(excPtr), exceptionAddressesRes[0], exceptionAddressesRes[0]+4)
+			if err != nil {
+				return "", "", err
+			}
+
+			// Read the address to the type string.
+			typeAddr, ok := mod.Memory().ReadUint32Le(uint32(exceptionAddressesRes[0]))
+			if !ok {
+				return "", "", errors.New("could not read typeAddr from memory")
+			}
+
+			// Read the type string from memory and free the memory.
+			typeString, err := readCString(mod, typeAddr)
+			mod.ExportedFunction("free").Call(ctx, api.EncodeU32(typeAddr))
+			if err != nil {
+				return "", "", err
+			}
+
+			// Read the address to the message string.
+			messageAddr, ok := mod.Memory().ReadUint32Le(uint32(exceptionAddressesRes[0] + 4))
+			if !ok {
+				return "", "", errors.New("could not read messageAddr from memory")
+			}
+
+			// Read the message string from memory and free the memory if it has
+			// been set. The message is only there in some cases.
+			messageString := ""
+			if messageAddr > 0 {
+				messageString, err = readCString(mod, messageAddr)
+				mod.ExportedFunction("free").Call(ctx, api.EncodeU32(messageAddr))
+				if err != nil {
+					return "", "", err
+				}
+			}
+
+			return typeString, messageString, nil
+		}(excPtr)
+		if err != nil {
+			return nil, err
 		}
+
+		exception.name = name
+		exception.message = message
 	}
 
 	return exception, nil
@@ -220,6 +248,12 @@ var CxaThrow = &wasm.HostFunc{
 	})},
 }
 
+// FindMatchingCatchPrefix is the naming convention of Emscripten dynamic
+// exception type matching functions.
+//
+// Every argument in the function call is a pointer to a C++ type that the
+// catch block support. The implementation loops through all arguments
+// to check if one of the arguments is of the same type as the exception.
 const FindMatchingCatchPrefix = "__cxa_find_matching_catch_"
 
 func NewFindMatchingCatchFunc(importName string, params, results []api.ValueType) *wasm.HostFunc {
@@ -228,8 +262,9 @@ func NewFindMatchingCatchFunc(importName string, params, results []api.ValueType
 	// Make friendly parameter names.
 	paramNames := make([]string, len(params))
 	for i := 0; i < len(paramNames); i++ {
-		paramNames[i] = "arg" + strconv.Itoa(i)
+		paramNames[i] = "type" + strconv.Itoa(i)
 	}
+
 	return &wasm.HostFunc{
 		ExportName:  importName,
 		ParamTypes:  params,
@@ -314,7 +349,7 @@ var LlvmEhTypeidFor = &wasm.HostFunc{
 	ResultTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ResultNames: []string{"type"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(context.Context, api.Module, []uint64) {
-		// This function doesn't do anything.
+		// This function doesn't seem to do anything.
 		// JS:
 		// function _llvm_eh_typeid_for(type) {
 		//   return type;
