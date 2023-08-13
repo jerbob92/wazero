@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/internal/wasm"
@@ -114,8 +115,6 @@ var EmbindRegisterBool = &wasm.HostFunc{
 
 		rawType := api.DecodeI32(stack[0])
 
-		log.Printf("boolean: %d", rawType)
-
 		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
@@ -184,38 +183,27 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 		}
 
 		size := api.DecodeI32(stack[2])
-		shift, err := engine.getShiftFromSize(size)
-		if err != nil {
-			panic(fmt.Errorf("could not get shift size: %w", err))
-		}
 
-		minRange := api.DecodeI32(stack[3])
-		//maxRange := int64(api.DecodeI32(stack[4]))
+		// @todo: implement min/max checks?
 
-		// LLVM doesn't have signed and unsigned 32-bit types, so u32 literals come
-		// out as 'i32 -1'. Always treat those as max u32.
-		//if maxRange == -1 {
-		//	maxRange = 4294967295
-		//}
-
-		signed := minRange != 0
+		signed := !strings.Contains(name, "unsigned")
 		err = engine.registerType(rawType, &registeredType{
 			rawType: rawType,
 			name:    name,
 			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
-				if shift == 0 {
+				if size == 1 {
 					if !signed {
 						return uint8(api.DecodeI32(value)), nil
 					}
 
 					return int8(api.DecodeI32(value)), nil
-				} else if shift == 1 {
+				} else if size == 2 {
 					if !signed {
 						return uint16(api.DecodeI32(value)), nil
 					}
 
 					return int16(api.DecodeI32(value)), nil
-				} else if shift == 2 {
+				} else if size == 4 {
 					if !signed {
 						return api.DecodeU32(value), nil
 					}
@@ -226,7 +214,7 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 				return nil, fmt.Errorf("unknown integer size")
 			},
 			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				if shift == 0 {
+				if size == 1 {
 					if !signed {
 						uint8Val, ok := o.(uint8)
 						if ok {
@@ -242,7 +230,7 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 					}
 
 					return 0, fmt.Errorf("value must be of type int8")
-				} else if shift == 1 {
+				} else if size == 2 {
 					if !signed {
 						uint16Val, ok := o.(uint16)
 						if ok {
@@ -258,7 +246,7 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 					}
 
 					return 0, fmt.Errorf("value must be of type int16")
-				} else if shift == 2 {
+				} else if size == 4 {
 					if !signed {
 						uint32Val, ok := o.(uint32)
 						if ok {
@@ -280,19 +268,19 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 			},
 			argPackAdvance: 8,
 			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
-				if shift == 0 {
+				if size == 1 {
 					val, _ := mod.Memory().ReadByte(pointer)
 					if !signed {
 						return uint8(val), nil
 					}
 					return int8(val), nil
-				} else if shift == 1 {
+				} else if size == 2 {
 					val, _ := mod.Memory().ReadUint16Le(pointer)
 					if !signed {
 						return uint16(val), nil
 					}
 					return int16(val), nil
-				} else if shift == 2 {
+				} else if size == 4 {
 					val, _ := mod.Memory().ReadUint32Le(pointer)
 					if !signed {
 						return uint32(val), nil
@@ -314,27 +302,67 @@ var EmbindRegisterBigInt = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI64, wasm.ValueTypeI64},
 	ParamNames: []string{"primitiveType", "name", "size", "minRange", "maxRange"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		//engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
-		log.Printf("Bigint: %d", rawType)
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
 
-		/*
-			rawType := api.DecodeI32(stack[0])
-			name, err := engine.readCString( uint32(api.DecodeI32(stack[0])))
-			if err != nil {
-				panic(fmt.Errorf("could not read name: %w", err))
-			}
+		size := api.DecodeI32(stack[2])
 
-			size := api.DecodeI32(stack[2])
-			shift := getShiftFromSize(size)
-			minRange := api.DecodeI32(stack[3])
-			maxRange := int64(api.DecodeI32(stack[4]))
-		*/
+		// @todo: implement min/max checks?
 
-		//log.Printf("register bigint %s: %d %d %d %d %d", name, rawType, size, shift, minRange, maxRange)
-		// @todo: generate code that contains bigints.
-		// @todo: implement me.
+		signed := !strings.HasPrefix(name, "u")
+		err = engine.registerType(rawType, &registeredType{
+			rawType: rawType,
+			name:    name,
+			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
+				if size == 8 {
+					if !signed {
+						return uint64(value), nil
+					}
+
+					return int64(value), nil
+				}
+
+				return nil, fmt.Errorf("unknown bigint size")
+			},
+			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
+				if size == 8 {
+					if !signed {
+						uint64Val, ok := o.(uint64)
+						if ok {
+							return uint64(uint64Val), nil
+						}
+
+						return 0, fmt.Errorf("value must be of type uint64")
+					}
+
+					int64Val, ok := o.(int64)
+					if ok {
+						return uint64(int64Val), nil
+					}
+
+					return 0, fmt.Errorf("value must be of type int64")
+				}
+
+				return 0, fmt.Errorf("unknown bigint size")
+			},
+			argPackAdvance: 8,
+			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
+				if size == 8 {
+					val, _ := mod.Memory().ReadUint64Le(pointer)
+					if !signed {
+						return uint64(val), nil
+					}
+					return int64(val), nil
+				}
+
+				return nil, fmt.Errorf("unknown bigint type: %s", name)
+			},
+		}, nil)
 	})},
 }
 
@@ -349,7 +377,6 @@ var EmbindRegisterFloat = &wasm.HostFunc{
 		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
-		log.Printf("Float: %d", rawType)
 		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
@@ -417,9 +444,11 @@ var EmbindRegisterStdString = &wasm.HostFunc{
 	Name:       FunctionEmbindRegisterStdString,
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name"},
-	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(context.Context, api.Module, []uint64) {
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		rawType := api.DecodeI32(stack[0])
 		//log.Println("register std_string")
 		// @todo: implement me.
+		log.Printf("std_string: %d", rawType)
 	})},
 }
 
@@ -431,8 +460,10 @@ var EmbindRegisterStdWString = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "charSize", "name"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		rawType := api.DecodeI32(stack[0])
 		//log.Println("register std_wstring")
 		// @todo: implement me.
+		log.Printf("std_wstring: %d", rawType)
 	})},
 }
 
@@ -462,7 +493,7 @@ var EmbindRegisterMemoryView = &wasm.HostFunc{
 		//log.Println("register memory_view")
 		// @todo: implement me.
 		rawType := api.DecodeI32(stack[0])
-		log.Printf("memory view: %d", rawType)
+		log.Printf("memory_view: %d", rawType)
 	})},
 }
 
@@ -483,7 +514,7 @@ var EmbindRegisterConstant = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 		rawType := api.DecodeI32(stack[1])
-		log.Printf("Constant needs type %d", rawType)
+		log.Printf("constant %d", rawType)
 
 		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawType}, func(argTypes []*registeredType) ([]*registeredType, error) {
 			log.Printf("Constant has type %d", rawType)
@@ -522,6 +553,8 @@ var EmbindRegisterEnum = &wasm.HostFunc{
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
+
+		log.Printf("enum: %d", rawType)
 
 		err = engine.registerType(rawType, &registeredType{
 			rawType: rawType,
