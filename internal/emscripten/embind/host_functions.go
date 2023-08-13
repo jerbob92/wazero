@@ -18,32 +18,42 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 	ParamNames: []string{"name", "argCount", "rawArgTypesAddr", "signature", "rawInvoker", "fn", "isAsync"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
 		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		namePtr := api.DecodeI32(stack[0])
+		argCount := api.DecodeI32(stack[1])
+		rawArgTypesAddr := api.DecodeI32(stack[2])
+		signaturePtr := api.DecodeI32(stack[3])
+		rawInvoker := api.DecodeI32(stack[4])
+		fn := api.DecodeI32(stack[5])
+		isAsync := api.DecodeI32(stack[6]) != 0
 
-		argTypes, err := engine.heap32VectorToArray(api.DecodeI32(stack[1]), api.DecodeI32(stack[2]))
+		argTypes, err := engine.heap32VectorToArray(argCount, rawArgTypesAddr)
 		if err != nil {
 			panic(fmt.Errorf("could not read arg types: %w", err))
 		}
 
-		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
+		name, err := engine.readCString(uint32(namePtr))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
 		// Create an api.Function to be able to invoke the function on the
 		// Emscripten side.
-		rawInvoker := engine.embind__requireFunction(api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+		invokerFunc, err := engine.newInvokeFunc(signaturePtr, rawInvoker)
+		if err != nil {
+			panic(fmt.Errorf("could not create invoke func: %w", err))
+		}
 
 		// Set a default callback that errors out when not all types are resolved.
 		engine.exposePublicSymbol(name, func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), argTypes)
-		}, api.DecodeI32(stack[1])-1)
+		}, argCount-1)
 
 		// When all types are resolved, replace the callback with the actual implementation.
 		err = engine.whenDependentTypesAreResolved([]int32{}, argTypes, func(argTypes []*registeredType) ([]*registeredType, error) {
 			invokerArgsArray := []*registeredType{argTypes[0] /* return value */, nil /* no class 'this'*/}
 			invokerArgsArray = append(invokerArgsArray, argTypes[1:]... /* actual params */)
 
-			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, rawInvoker, api.DecodeI32(stack[5]), api.DecodeI32(stack[6]) != 0), api.DecodeI32(stack[1])-1)
+			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, invokerFunc, fn, isAsync), argCount-1)
 			if err != nil {
 				return nil, err
 			}
@@ -67,7 +77,7 @@ var EmbindRegisterVoid = &wasm.HostFunc{
 		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
-		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
@@ -106,7 +116,7 @@ var EmbindRegisterBool = &wasm.HostFunc{
 
 		log.Printf("boolean: %d", rawType)
 
-		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
@@ -165,31 +175,134 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name", "size", "minRange", "maxRange"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		//engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
-		log.Printf("Integer: %d", rawType)
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
 
-		/*
-			rawType := api.DecodeI32(stack[0])
-			name, err := engine.readCString( uint32(api.DecodeI32(stack[0])))
-			if err != nil {
-				panic(fmt.Errorf("could not read name: %w", err))
-			}
+		size := api.DecodeI32(stack[2])
+		shift, err := engine.getShiftFromSize(size)
+		if err != nil {
+			panic(fmt.Errorf("could not get shift size: %w", err))
+		}
 
-			size := api.DecodeI32(stack[2])
-			shift := getShiftFromSize(size)
-			minRange := api.DecodeI32(stack[3])
-			maxRange := int64(api.DecodeI32(stack[4]))
-			// LLVM doesn't have signed and unsigned 32-bit types, so u32 literals come
-			// out as 'i32 -1'. Always treat those as max u32.
-			if maxRange == -1 {
-				maxRange = 4294967295
-			}
+		minRange := api.DecodeI32(stack[3])
+		//maxRange := int64(api.DecodeI32(stack[4]))
 
-			log.Printf("register integer %s: %d %d %d %d %d", name, rawType, size, shift, minRange, maxRange)
-		*/
-		// @todo: implement me.
+		// LLVM doesn't have signed and unsigned 32-bit types, so u32 literals come
+		// out as 'i32 -1'. Always treat those as max u32.
+		//if maxRange == -1 {
+		//	maxRange = 4294967295
+		//}
+
+		signed := minRange != 0
+		err = engine.registerType(rawType, &registeredType{
+			rawType: rawType,
+			name:    name,
+			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
+				if shift == 0 {
+					if !signed {
+						return uint8(api.DecodeI32(value)), nil
+					}
+
+					return int8(api.DecodeI32(value)), nil
+				} else if shift == 1 {
+					if !signed {
+						return uint16(api.DecodeI32(value)), nil
+					}
+
+					return int16(api.DecodeI32(value)), nil
+				} else if shift == 2 {
+					if !signed {
+						return api.DecodeU32(value), nil
+					}
+
+					return api.DecodeI32(value), nil
+				}
+
+				return nil, fmt.Errorf("unknown integer size")
+			},
+			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
+				if shift == 0 {
+					if !signed {
+						uint8Val, ok := o.(uint8)
+						if ok {
+							return uint64(uint8Val), nil
+						}
+
+						return 0, fmt.Errorf("value must be of type uint8")
+					}
+
+					int8Val, ok := o.(int8)
+					if ok {
+						return uint64(int8Val), nil
+					}
+
+					return 0, fmt.Errorf("value must be of type int8")
+				} else if shift == 1 {
+					if !signed {
+						uint16Val, ok := o.(uint16)
+						if ok {
+							return uint64(uint16Val), nil
+						}
+
+						return 0, fmt.Errorf("value must be of type uint16")
+					}
+
+					int16Val, ok := o.(int16)
+					if ok {
+						return uint64(int16Val), nil
+					}
+
+					return 0, fmt.Errorf("value must be of type int16")
+				} else if shift == 2 {
+					if !signed {
+						uint32Val, ok := o.(uint32)
+						if ok {
+							return api.EncodeU32(uint32Val), nil
+						}
+
+						return 0, fmt.Errorf("value must be of type uint32")
+					}
+
+					int32Val, ok := o.(int32)
+					if ok {
+						return api.EncodeI32(int32Val), nil
+					}
+
+					return 0, fmt.Errorf("value must be of type int32")
+				}
+
+				return 0, fmt.Errorf("unknown integer size")
+			},
+			argPackAdvance: 8,
+			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
+				if shift == 0 {
+					val, _ := mod.Memory().ReadByte(pointer)
+					if !signed {
+						return uint8(val), nil
+					}
+					return int8(val), nil
+				} else if shift == 1 {
+					val, _ := mod.Memory().ReadUint16Le(pointer)
+					if !signed {
+						return uint16(val), nil
+					}
+					return int16(val), nil
+				} else if shift == 2 {
+					val, _ := mod.Memory().ReadUint32Le(pointer)
+					if !signed {
+						return uint32(val), nil
+					}
+					return int32(val), nil
+				}
+
+				return nil, fmt.Errorf("unknown integer type: %s", name)
+			},
+		}, nil)
 	})},
 }
 
@@ -237,7 +350,7 @@ var EmbindRegisterFloat = &wasm.HostFunc{
 
 		rawType := api.DecodeI32(stack[0])
 		log.Printf("Float: %d", rawType)
-		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}

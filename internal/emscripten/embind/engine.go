@@ -24,7 +24,7 @@ func (e *engine) CallFunction(ctx context.Context, name string, arguments ...any
 	return res, nil
 }
 
-func (e *engine) embind__requireFunction(signaturePtr, rawInvoker int32) api.Function {
+func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32) (api.Function, error) {
 	// Not used in Wazero.
 	//signature, err := readCString(mod, uint32(signaturePtr))
 	//if err != nil {
@@ -44,10 +44,10 @@ func (e *engine) embind__requireFunction(signaturePtr, rawInvoker int32) api.Fun
 	// We do not know the function type ID and also don't really care.
 	f, err := m.Engine.LookupFunction(t, nil, tableOffset)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return f
+	return f, err
 }
 
 func (e *engine) heap32VectorToArray(count, firstElement int32) ([]int32, error) {
