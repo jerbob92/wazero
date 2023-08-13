@@ -10,15 +10,7 @@ import (
 	"strings"
 )
 
-type embindEngine struct {
-	mod                  api.Module
-	publicSymbols        map[string]*publicSymbol
-	registeredTypes      map[int32]*registeredType
-	typeDependencies     map[int32][]int32
-	awaitingDependencies map[int32][]*awaitingDependency
-}
-
-func (e *embindEngine) CallFunction(ctx context.Context, name string, arguments ...any) (any, error) {
+func (e *engine) CallFunction(ctx context.Context, name string, arguments ...any) (any, error) {
 	_, ok := e.publicSymbols[name]
 	if !ok {
 		return nil, fmt.Errorf("could not find public symbol %s", name)
@@ -32,7 +24,7 @@ func (e *embindEngine) CallFunction(ctx context.Context, name string, arguments 
 	return res, nil
 }
 
-func (e *embindEngine) embind__requireFunction(signaturePtr, rawInvoker int32) api.Function {
+func (e *engine) embind__requireFunction(signaturePtr, rawInvoker int32) api.Function {
 	// Not used in Wazero.
 	//signature, err := readCString(mod, uint32(signaturePtr))
 	//if err != nil {
@@ -58,7 +50,7 @@ func (e *embindEngine) embind__requireFunction(signaturePtr, rawInvoker int32) a
 	return f
 }
 
-func (e *embindEngine) heap32VectorToArray(count, firstElement int32) ([]int32, error) {
+func (e *engine) heap32VectorToArray(count, firstElement int32) ([]int32, error) {
 	array := make([]int32, count)
 	for i := int32(0); i < count; i++ {
 		val, ok := e.mod.Memory().ReadUint32Le(uint32(firstElement + (i * 4)))
@@ -70,7 +62,7 @@ func (e *embindEngine) heap32VectorToArray(count, firstElement int32) ([]int32, 
 	return array, nil
 }
 
-func (e *embindEngine) registerType(rawType int32, registeredInstance *registeredType, options *registerTypeOptions) error {
+func (e *engine) registerType(rawType int32, registeredInstance *registeredType, options *registerTypeOptions) error {
 	name := registeredInstance.name
 	if rawType == 0 {
 		return fmt.Errorf("type \"%s\" must have a positive integer typeid pointer", name)
@@ -102,7 +94,7 @@ func (e *embindEngine) registerType(rawType int32, registeredInstance *registere
 	return nil
 }
 
-func (e *embindEngine) ensureOverloadTable(methodName, humanName string) {
+func (e *engine) ensureOverloadTable(methodName, humanName string) {
 	if e.publicSymbols[methodName].overloadTable == nil {
 		prevFunc := e.publicSymbols[methodName].fn
 		prevArgCount := e.publicSymbols[methodName].argCount
@@ -130,7 +122,7 @@ func (e *embindEngine) ensureOverloadTable(methodName, humanName string) {
 	}
 }
 
-func (e *embindEngine) exposePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) {
+func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) {
 	_, ok := e.publicSymbols[name]
 	if ok {
 		_, ok = e.publicSymbols[name].overloadTable[numArguments]
@@ -158,7 +150,7 @@ func (e *embindEngine) exposePublicSymbol(name string, value func(ctx context.Co
 	}
 }
 
-func (e *embindEngine) replacePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
+func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
 	_, ok := e.publicSymbols[name]
 	if !ok {
 		return fmt.Errorf("tried to replace a nonexistant public symbol %s", name)
@@ -180,7 +172,7 @@ func (e *embindEngine) replacePublicSymbol(name string, value func(ctx context.C
 	return nil
 }
 
-func (e *embindEngine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, getTypeConverters func([]*registeredType) ([]*registeredType, error)) error {
+func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, getTypeConverters func([]*registeredType) ([]*registeredType, error)) error {
 	for i := range myTypes {
 		e.typeDependencies[myTypes[i]] = dependentTypes
 	}
@@ -250,7 +242,7 @@ func (e *embindEngine) whenDependentTypesAreResolved(myTypes, dependentTypes []i
 	return nil
 }
 
-func (e *embindEngine) craftInvokerFunction(humanName string, argTypes []*registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
 	// humanName: a human-readable string name for the function to be generated.
 	// argTypes: An array that contains the embind type objects for all types in the function signature.
 	//    argTypes[0] is the type object for the function return value.
@@ -372,7 +364,7 @@ type destructorFunc struct {
 	args     []uint64
 }
 
-func (e *embindEngine) runDestructors(ctx context.Context, destructors []*destructorFunc) error {
+func (e *engine) runDestructors(ctx context.Context, destructors []*destructorFunc) error {
 	for i := range destructors {
 		_, err := e.mod.ExportedFunction(destructors[i].function).Call(ctx, destructors[i].args...)
 		if err != nil {
@@ -383,7 +375,7 @@ func (e *embindEngine) runDestructors(ctx context.Context, destructors []*destru
 	return nil
 }
 
-func (e *embindEngine) getShiftFromSize(size int32) (int32, error) {
+func (e *engine) getShiftFromSize(size int32) (int32, error) {
 	switch size {
 	case 1:
 		return 0, nil
@@ -401,7 +393,7 @@ func (e *embindEngine) getShiftFromSize(size int32) (int32, error) {
 // readCString reads a C string by reading byte per byte until it sees a NULL
 // byte which is used as a string terminator in C.
 // @todo: limit this so we won't try to read too much when some mistake is made?
-func (e *embindEngine) readCString(addr uint32) (string, error) {
+func (e *engine) readCString(addr uint32) (string, error) {
 	var sb strings.Builder
 	for {
 		b, success := e.mod.Memory().ReadByte(addr)
@@ -428,7 +420,7 @@ func (e *embindEngine) readCString(addr uint32) (string, error) {
 // which types not have registered on the engine yet. The seen map is used to
 // keep track which types has been seen so the same type isn't reported or
 // checked twice.
-func (e *embindEngine) checkRegisteredTypeDependencies(typeToVisit int32, seen *map[int32]bool) []int32 {
+func (e *engine) checkRegisteredTypeDependencies(typeToVisit int32, seen *map[int32]bool) []int32 {
 	unboundTypes := make([]int32, 0)
 	seenMap := *seen
 	if seenMap[typeToVisit] {
@@ -459,7 +451,7 @@ func (e *embindEngine) checkRegisteredTypeDependencies(typeToVisit int32, seen *
 
 // getTypeName calls the Emscripten exported function __getTypeName to get a
 // pointer to the C string that contains the type name.
-func (e *embindEngine) getTypeName(ctx context.Context, typeId int32) (string, error) {
+func (e *engine) getTypeName(ctx context.Context, typeId int32) (string, error) {
 	typeNameRes, err := e.mod.ExportedFunction("__getTypeName").Call(ctx, api.EncodeI32(typeId))
 	if err != nil {
 		return "", err
@@ -482,7 +474,7 @@ func (e *embindEngine) getTypeName(ctx context.Context, typeId int32) (string, e
 // createUnboundTypeError generated the error for when not all required type
 // dependencies are resolved. It will traverse the dependency tree and list all
 // the missing types by name.
-func (e *embindEngine) createUnboundTypeError(ctx context.Context, message string, types []int32) error {
+func (e *engine) createUnboundTypeError(ctx context.Context, message string, types []int32) error {
 	unregisteredTypes := []int32{}
 
 	// The seen map is used to keep tracks of the seen dependencies, so that if

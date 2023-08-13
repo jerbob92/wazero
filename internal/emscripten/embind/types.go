@@ -26,12 +26,20 @@ type awaitingDependency struct {
 	cb func() error
 }
 
-// @todo: implement classes.
-type classType struct {
-}
-
 type publicSymbol struct {
 	argCount      int32
 	overloadTable map[int32]*publicSymbol
 	fn            publicSymbolFn
+}
+
+// @todo: implement classes.
+type classType struct {
+}
+
+type engine struct {
+	mod                  api.Module
+	publicSymbols        map[string]*publicSymbol
+	registeredTypes      map[int32]*registeredType
+	typeDependencies     map[int32][]int32
+	awaitingDependencies map[int32][]*awaitingDependency
 }

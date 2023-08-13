@@ -11,8 +11,6 @@ type Engine interface {
 	CallFunction(ctx context.Context, name string, arguments ...any) (any, error)
 }
 
-type EngineKey struct{}
-
 func GetEngineFromContext(ctx context.Context) (Engine, error) {
 	raw := ctx.Value(EngineKey{})
 	if raw == nil {
@@ -28,25 +26,32 @@ func GetEngineFromContext(ctx context.Context) (Engine, error) {
 }
 
 func MustGetEngineFromContext(ctx context.Context, mod api.Module) Engine {
-	engine, err := GetEngineFromContext(ctx)
+	e, err := GetEngineFromContext(ctx)
 	if err != nil {
 		panic(fmt.Errorf("could not get embind engine from context: %w, make sure to create an engine with embind.CreateEngine() and to attach it to the context with \"ctx = context.WithValue(ctx, embind.EngineKey{}, engine)\"", err))
 	}
 
-	if engine.(*embindEngine).mod != nil {
-		if engine.(*embindEngine).mod != mod {
+	if e.(*engine).mod != nil {
+		if e.(*engine).mod != mod {
 			panic(fmt.Errorf("could not get embind engine from context, this engine was created for another Wazero api.Module"))
 		}
 	}
 
 	// Make sure we have the api module set.
-	engine.(*embindEngine).mod = mod
+	e.(*engine).mod = mod
 
-	return engine
+	return e
 }
 
+// EngineKey Use this key to add the engine to your context:
+// ctx = context.WithValue(ctx, embind.EngineKey{}, engine)
+type EngineKey struct{}
+
+// CreateEngine returns a new embind engine to attach to your context.
+// Be sure to attach it before you run InstantiateModule on the runtime, unless
+// you run the _start/_initialize function manually.
 func CreateEngine() Engine {
-	return &embindEngine{
+	return &engine{
 		publicSymbols:        map[string]*publicSymbol{},
 		registeredTypes:      map[int32]*registeredType{},
 		typeDependencies:     map[int32][]int32{},

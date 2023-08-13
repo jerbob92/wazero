@@ -17,7 +17,7 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"name", "argCount", "rawArgTypesAddr", "signature", "rawInvoker", "fn", "isAsync"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		argTypes, err := engine.heap32VectorToArray(api.DecodeI32(stack[1]), api.DecodeI32(stack[2]))
 		if err != nil {
@@ -64,7 +64,7 @@ var EmbindRegisterVoid = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
@@ -100,7 +100,7 @@ var EmbindRegisterBool = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name", "size", "trueValue", "falseValue"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 
@@ -165,7 +165,7 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name", "size", "minRange", "maxRange"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		//engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		//engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 		log.Printf("Integer: %d", rawType)
@@ -201,7 +201,7 @@ var EmbindRegisterBigInt = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI64, wasm.ValueTypeI64},
 	ParamNames: []string{"primitiveType", "name", "size", "minRange", "maxRange"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		//engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		//engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 		log.Printf("Bigint: %d", rawType)
@@ -233,7 +233,7 @@ var EmbindRegisterFloat = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name", "size"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 		log.Printf("Float: %d", rawType)
@@ -363,7 +363,7 @@ var EmbindRegisterConstant = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeF64},
 	ParamNames: []string{"name", "type", "value"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		name, err := engine.readCString(uint32(api.DecodeI32(stack[0])))
 		if err != nil {
@@ -400,7 +400,7 @@ var EmbindRegisterEnum = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name", "size", "isSigned"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		engine := MustGetEngineFromContext(ctx, mod).(*embindEngine)
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
 		//size := api.DecodeI32(stack[2])
