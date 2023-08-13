@@ -435,7 +435,7 @@ func (e *mockEngine) CompileModule(context.Context, *Module, []experimental.Func
 }
 
 // LookupFunction implements the same method as documented on wasm.Engine.
-func (e *mockModuleEngine) LookupFunction(*TableInstance, FunctionTypeID, Index) (api.Function, error) {
+func (e *mockModuleEngine) LookupFunction(*TableInstance, *FunctionTypeID, Index) (api.Function, error) {
 	return nil, nil
 }
 

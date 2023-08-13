@@ -675,7 +675,7 @@ func (e *moduleEngine) newFunction(f *function) api.Function {
 }
 
 // LookupFunction implements the same method as documented on wasm.ModuleEngine.
-func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, tableOffset wasm.Index) (f api.Function, err error) {
+func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId *wasm.FunctionTypeID, tableOffset wasm.Index) (f api.Function, err error) {
 	if tableOffset >= uint32(len(t.References)) || t.Type != wasm.RefTypeFuncref {
 		err = wasmruntime.ErrRuntimeInvalidTableAccess
 		return
@@ -687,7 +687,7 @@ func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.Functio
 	}
 
 	tf := functionFromUintptr(rawPtr)
-	if tf.typeID != typeId {
+	if typeId != nil && tf.typeID != *typeId {
 		err = wasmruntime.ErrRuntimeIndirectCallTypeMismatch
 		return
 	}

@@ -106,7 +106,7 @@ func (m *moduleEngine) ResolveImportedFunction(index, indexInImportedModule wasm
 }
 
 // LookupFunction implements wasm.ModuleEngine.
-func (m *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, tableOffset wasm.Index) (api.Function, error) {
+func (m *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId *wasm.FunctionTypeID, tableOffset wasm.Index) (api.Function, error) {
 	panic("TODO")
 }
 

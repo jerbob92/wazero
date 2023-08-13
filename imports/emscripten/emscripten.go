@@ -19,6 +19,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	internal "github.com/tetratelabs/wazero/internal/emscripten"
+	embind_internal "github.com/tetratelabs/wazero/internal/emscripten/embind"
 	"github.com/tetratelabs/wazero/internal/wasm"
 )
 
@@ -94,26 +95,42 @@ func InstantiateForModule(ctx context.Context, r wazero.Runtime, guest wazero.Co
 // NewFunctionExporterForModule returns a guest-specific FunctionExporter,
 // populated with any known functions used in emscripten.
 func NewFunctionExporterForModule(guest wazero.CompiledModule) (FunctionExporter, error) {
+	functionMap := map[string]*wasm.HostFunc{
+		internal.FunctionNotifyMemoryGrowth:              internal.NotifyMemoryGrowth,
+		internal.FunctionThrowLongjmp:                    internal.ThrowLongjmp,
+		embind_internal.FunctionEmbindRegisterVoid:       embind_internal.EmbindRegisterVoid,
+		embind_internal.FunctionEmbindRegisterFunction:   embind_internal.EmbindRegisterFunction,
+		embind_internal.FunctionEmbindRegisterBool:       embind_internal.EmbindRegisterBool,
+		embind_internal.FunctionEmbindRegisterInteger:    embind_internal.EmbindRegisterInteger,
+		embind_internal.FunctionEmbindRegisterBigInt:     embind_internal.EmbindRegisterBigInt,
+		embind_internal.FunctionEmbindRegisterFloat:      embind_internal.EmbindRegisterFloat,
+		embind_internal.FunctionEmbindRegisterStdString:  embind_internal.EmbindRegisterStdString,
+		embind_internal.FunctionEmbindRegisterStdWString: embind_internal.EmbindRegisterStdWString,
+		embind_internal.FunctionEmbindRegisterEmval:      embind_internal.EmbindRegisterEmval,
+		embind_internal.FunctionEmbindRegisterMemoryView: embind_internal.EmbindRegisterMemoryView,
+		embind_internal.FunctionEmbindRegisterConstant:   embind_internal.EmbindRegisterConstant,
+		embind_internal.FunctionEmbindRegisterEnum:       embind_internal.EmbindRegisterEnum,
+		embind_internal.FunctionEmbindRegisterEnumValue:  embind_internal.EmbindRegisterEnumValue,
+	}
 	ret := emscriptenFns{}
 	for _, fn := range guest.ImportedFunctions() {
 		importModule, importName, isImport := fn.Import()
 		if !isImport || importModule != "env" {
 			continue // not emscripten
 		}
-		if importName == internal.FunctionNotifyMemoryGrowth {
-			ret = append(ret, internal.NotifyMemoryGrowth)
+
+		hf, ok := functionMap[importName]
+		if ok {
+			ret = append(ret, hf)
 			continue
-		}
-		if importName == internal.FunctionThrowLongjmp {
-			ret = append(ret, internal.ThrowLongjmp)
-			continue
-		}
-		if !strings.HasPrefix(importName, internal.InvokePrefix) {
-			continue // not invoke, and maybe not emscripten
 		}
 
-		hf := internal.NewInvokeFunc(importName, fn.ParamTypes(), fn.ResultTypes())
-		ret = append(ret, hf)
+		if strings.HasPrefix(importName, internal.InvokePrefix) {
+			hf = internal.NewInvokeFunc(importName, fn.ParamTypes(), fn.ResultTypes())
+			ret = append(ret, hf)
+		}
+
+		// not invoke, and maybe not emscripten
 	}
 	return ret, nil
 }
