@@ -269,7 +269,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 			typeConverters[i] = e.registeredTypes[dt]
 		} else {
 			unregisteredTypes = append(unregisteredTypes, dt)
-			_, ok := e.awaitingDependencies[dt]
+			_, ok = e.awaitingDependencies[dt]
 			if !ok {
 				e.awaitingDependencies[dt] = []*awaitingDependency{}
 			}
@@ -479,7 +479,7 @@ func (e *engine) checkRegisteredTypeDependencies(typeToVisit int32, seen *map[in
 	_, ok = e.typeDependencies[typeToVisit]
 	if ok {
 		for i := range e.typeDependencies[typeToVisit] {
-			newUnboundTypes := e.checkRegisteredTypeDependencies(e.typeDependencies[typeToVisit][i], seen)
+			newUnboundTypes := e.checkRegisteredTypeDependencies(e.typeDependencies[typeToVisit][i], &seenMap)
 			if newUnboundTypes != nil {
 				unboundTypes = append(unboundTypes, newUnboundTypes...)
 			}
@@ -489,7 +489,7 @@ func (e *engine) checkRegisteredTypeDependencies(typeToVisit int32, seen *map[in
 
 	unboundTypes = append(unboundTypes, typeToVisit)
 	seenMap[typeToVisit] = true
-	seen = &seenMap
+	*seen = seenMap
 	return unboundTypes
 }
 

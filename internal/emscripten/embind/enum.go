@@ -31,7 +31,7 @@ func (ev *enumValue) validate() error {
 
 type enumType struct {
 	baseType
-	intHelper        intType
+	intHelper        intType // Enums are basically ints, we use the intType underwater to make things easier.
 	valuesByName     map[string]*enumValue
 	valuesByCppValue map[any]*enumValue
 	valuesByGoValue  map[any]*enumValue
