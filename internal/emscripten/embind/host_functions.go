@@ -45,13 +45,16 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 		}
 
 		// Set a default callback that errors out when not all types are resolved.
-		engine.exposePublicSymbol(name, func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+		err = engine.exposePublicSymbol(name, func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), argTypes)
 		}, argCount-1)
+		if err != nil {
+			panic(fmt.Errorf("could not expose public symbol: %w", err))
+		}
 
 		// When all types are resolved, replace the callback with the actual implementation.
-		err = engine.whenDependentTypesAreResolved([]int32{}, argTypes, func(argTypes []*registeredType) ([]*registeredType, error) {
-			invokerArgsArray := []*registeredType{argTypes[0] /* return value */, nil /* no class 'this'*/}
+		err = engine.whenDependentTypesAreResolved([]int32{}, argTypes, func(argTypes []registeredType) ([]registeredType, error) {
+			invokerArgsArray := []registeredType{argTypes[0] /* return value */, nil /* no class 'this'*/}
 			invokerArgsArray = append(invokerArgsArray, argTypes[1:]... /* actual params */)
 
 			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, invokerFunc, fn, isAsync), argCount-1)
@@ -59,7 +62,7 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 				return nil, err
 			}
 
-			return []*registeredType{}, nil
+			return []registeredType{}, nil
 		})
 		if err != nil {
 			panic(fmt.Errorf("could not setup type dependenant lookup callbacks: %w", err))
@@ -83,17 +86,11 @@ var EmbindRegisterVoid = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		err = engine.registerType(rawType, &registeredType{
-			isVoid:         true,
-			rawType:        rawType,
-			name:           name,
-			argPackAdvance: 0,
-			fromWireType: func(ctx context.Context, mod api.Module, wt uint64) (any, error) {
-				return nil, nil
-			},
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				// TODO: assert if anything else is given?
-				return 0, nil
+		err = engine.registerType(rawType, &voidType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 0,
 			},
 		}, nil)
 
@@ -120,48 +117,15 @@ var EmbindRegisterBool = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		size := api.DecodeI32(stack[2])
-		//shift := getShiftFromSize(size)
-		trueVal := api.DecodeI32(stack[3])
-		falseVal := api.DecodeI32(stack[4])
-
-		fromWireType := func(ctx context.Context, mod api.Module, wt uint64) (any, error) {
-			// ambiguous emscripten ABI: sometimes return values are
-			// true or false, and sometimes integers (0 or 1)
-			return wt > 0, nil
-		}
-
-		err = engine.registerType(rawType, &registeredType{
-			rawType:      rawType,
-			name:         name,
-			fromWireType: fromWireType,
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				val, ok := o.(bool)
-				if !ok {
-					return 0, fmt.Errorf("value must be of type bool")
-				}
-
-				if val {
-					return api.EncodeI32(trueVal), nil
-				}
-
-				return api.EncodeI32(falseVal), nil
+		err = engine.registerType(rawType, &boolType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
 			},
-			argPackAdvance: 8,
-			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
-				if size == 1 {
-					val, _ := mod.Memory().ReadByte(pointer)
-					return fromWireType(ctx, mod, uint64(val))
-				} else if size == 2 {
-					val, _ := mod.Memory().ReadUint16Le(pointer)
-					return fromWireType(ctx, mod, uint64(val))
-				} else if size == 4 {
-					val, _ := mod.Memory().ReadUint32Le(pointer)
-					return fromWireType(ctx, mod, uint64(val))
-				} else {
-					return nil, fmt.Errorf("unknown boolean type size %d: %s", size, name)
-				}
-			},
+			size:     api.DecodeI32(stack[2]),
+			trueVal:  api.DecodeI32(stack[3]),
+			falseVal: api.DecodeI32(stack[4]),
 		}, nil)
 	})},
 }
@@ -182,114 +146,14 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		size := api.DecodeI32(stack[2])
-
-		// @todo: implement min/max checks?
-
-		signed := !strings.Contains(name, "unsigned")
-		err = engine.registerType(rawType, &registeredType{
-			rawType: rawType,
-			name:    name,
-			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
-				if size == 1 {
-					if !signed {
-						return uint8(api.DecodeI32(value)), nil
-					}
-
-					return int8(api.DecodeI32(value)), nil
-				} else if size == 2 {
-					if !signed {
-						return uint16(api.DecodeI32(value)), nil
-					}
-
-					return int16(api.DecodeI32(value)), nil
-				} else if size == 4 {
-					if !signed {
-						return api.DecodeU32(value), nil
-					}
-
-					return api.DecodeI32(value), nil
-				}
-
-				return nil, fmt.Errorf("unknown integer size")
+		err = engine.registerType(rawType, &intType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
 			},
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				if size == 1 {
-					if !signed {
-						uint8Val, ok := o.(uint8)
-						if ok {
-							return uint64(uint8Val), nil
-						}
-
-						return 0, fmt.Errorf("value must be of type uint8")
-					}
-
-					int8Val, ok := o.(int8)
-					if ok {
-						return uint64(int8Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type int8")
-				} else if size == 2 {
-					if !signed {
-						uint16Val, ok := o.(uint16)
-						if ok {
-							return uint64(uint16Val), nil
-						}
-
-						return 0, fmt.Errorf("value must be of type uint16")
-					}
-
-					int16Val, ok := o.(int16)
-					if ok {
-						return uint64(int16Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type int16")
-				} else if size == 4 {
-					if !signed {
-						uint32Val, ok := o.(uint32)
-						if ok {
-							return api.EncodeU32(uint32Val), nil
-						}
-
-						return 0, fmt.Errorf("value must be of type uint32")
-					}
-
-					int32Val, ok := o.(int32)
-					if ok {
-						return api.EncodeI32(int32Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type int32")
-				}
-
-				return 0, fmt.Errorf("unknown integer size")
-			},
-			argPackAdvance: 8,
-			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
-				if size == 1 {
-					val, _ := mod.Memory().ReadByte(pointer)
-					if !signed {
-						return uint8(val), nil
-					}
-					return int8(val), nil
-				} else if size == 2 {
-					val, _ := mod.Memory().ReadUint16Le(pointer)
-					if !signed {
-						return uint16(val), nil
-					}
-					return int16(val), nil
-				} else if size == 4 {
-					val, _ := mod.Memory().ReadUint32Le(pointer)
-					if !signed {
-						return uint32(val), nil
-					}
-					return int32(val), nil
-				}
-
-				return nil, fmt.Errorf("unknown integer type: %s", name)
-			},
+			size:   api.DecodeI32(stack[2]),
+			signed: !strings.Contains(name, "unsigned"),
 		}, nil)
 	})},
 }
@@ -310,58 +174,14 @@ var EmbindRegisterBigInt = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		size := api.DecodeI32(stack[2])
-
-		// @todo: implement min/max checks?
-
-		signed := !strings.HasPrefix(name, "u")
-		err = engine.registerType(rawType, &registeredType{
-			rawType: rawType,
-			name:    name,
-			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
-				if size == 8 {
-					if !signed {
-						return uint64(value), nil
-					}
-
-					return int64(value), nil
-				}
-
-				return nil, fmt.Errorf("unknown bigint size")
+		err = engine.registerType(rawType, &bigintType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
 			},
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				if size == 8 {
-					if !signed {
-						uint64Val, ok := o.(uint64)
-						if ok {
-							return uint64(uint64Val), nil
-						}
-
-						return 0, fmt.Errorf("value must be of type uint64")
-					}
-
-					int64Val, ok := o.(int64)
-					if ok {
-						return uint64(int64Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type int64")
-				}
-
-				return 0, fmt.Errorf("unknown bigint size")
-			},
-			argPackAdvance: 8,
-			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
-				if size == 8 {
-					val, _ := mod.Memory().ReadUint64Le(pointer)
-					if !signed {
-						return uint64(val), nil
-					}
-					return int64(val), nil
-				}
-
-				return nil, fmt.Errorf("unknown bigint type: %s", name)
-			},
+			size:   api.DecodeI32(stack[2]),
+			signed: !strings.HasPrefix(name, "u"),
 		}, nil)
 	})},
 }
@@ -382,57 +202,13 @@ var EmbindRegisterFloat = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		size := api.DecodeI32(stack[2])
-		shift, err := engine.getShiftFromSize(size)
-		if err != nil {
-			panic(fmt.Errorf("could not get shift size: %w", err))
-		}
-
-		err = engine.registerType(rawType, &registeredType{
-			rawType: rawType,
-			name:    name,
-			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
-				if size == 4 {
-					return api.DecodeF32(value), nil
-				}
-				if size == 8 {
-					return api.DecodeF64(value), nil
-				}
-				return nil, fmt.Errorf("unknown float size")
+		err = engine.registerType(rawType, &floatType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
 			},
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				if size == 4 {
-					f32Val, ok := o.(float32)
-					if ok {
-						return api.EncodeF32(f32Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type float32")
-				}
-
-				if size == 8 {
-					f64Val, ok := o.(float64)
-					if ok {
-						return api.EncodeF64(f64Val), nil
-					}
-
-					return 0, fmt.Errorf("value must be of type float64")
-				}
-
-				return 0, fmt.Errorf("unknown float size")
-			},
-			argPackAdvance: 8,
-			readValueFromPointer: func(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
-				if shift == 2 {
-					val, _ := mod.Memory().ReadFloat32Le(pointer)
-					return val, nil
-				} else if shift == 3 {
-					val, _ := mod.Memory().ReadUint64Le(pointer)
-					return val, nil
-				}
-
-				return nil, fmt.Errorf("unknown float type: %s", name)
-			},
+			size: api.DecodeI32(stack[2]),
 		}, nil)
 	})},
 }
@@ -445,10 +221,22 @@ var EmbindRegisterStdString = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "name"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+
 		rawType := api.DecodeI32(stack[0])
-		//log.Println("register std_string")
-		// @todo: implement me.
-		log.Printf("std_string: %d", rawType)
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+
+		err = engine.registerType(rawType, &stdStringType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
+			},
+			stdStringIsUTF8: name == "std::string",
+		}, nil)
 	})},
 }
 
@@ -460,10 +248,22 @@ var EmbindRegisterStdWString = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawType", "charSize", "name"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+
 		rawType := api.DecodeI32(stack[0])
-		//log.Println("register std_wstring")
-		// @todo: implement me.
-		log.Printf("std_wstring: %d", rawType)
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[2])))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+
+		err = engine.registerType(rawType, &stdWStringType{
+			baseType: baseType{
+				rawType:        rawType,
+				name:           name,
+				argPackAdvance: 8,
+			},
+			charSize: api.DecodeI32(stack[1]),
+		}, nil)
 	})},
 }
 
@@ -499,8 +299,6 @@ var EmbindRegisterMemoryView = &wasm.HostFunc{
 
 const FunctionEmbindRegisterConstant = "_embind_register_constant"
 
-var registeredConstants = map[string]any{}
-
 var EmbindRegisterConstant = &wasm.HostFunc{
 	ExportName: FunctionEmbindRegisterConstant,
 	Name:       FunctionEmbindRegisterConstant,
@@ -513,21 +311,34 @@ var EmbindRegisterConstant = &wasm.HostFunc{
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
+
 		rawType := api.DecodeI32(stack[1])
-		log.Printf("constant %d", rawType)
 
-		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawType}, func(argTypes []*registeredType) ([]*registeredType, error) {
-			log.Printf("Constant has type %d", rawType)
+		// @todo: this seems to work properly except for float and bool.
+		// JS VM does auto conversion, so we don't get much info from the
+		// Emscripten implementation. If I just pass the stack here, none of
+		// the values are correct except for double.
+		constantValue := uint64(api.DecodeF64(stack[2]))
 
+		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawType}, func(argTypes []registeredType) ([]registeredType, error) {
 			registeredType := argTypes[0]
-			log.Println(stack[2])
-			val, err := registeredType.fromWireType(ctx, engine.mod, stack[2])
+			val, err := registeredType.FromWireType(ctx, engine.mod, constantValue)
 			if err != nil {
 				return nil, fmt.Errorf("could not initialize constant %s: %w", name, err)
 			}
-			registeredConstants[name] = val
-			log.Println(registeredConstants)
-			return nil, nil
+
+			_, ok := engine.registeredConstants[name]
+			if !ok {
+				engine.registeredConstants[name] = &registeredConstant{
+					name: name,
+				}
+			}
+
+			engine.registeredConstants[name].hasCppValue = true
+			engine.registeredConstants[name].cppValue = val
+			engine.registeredConstants[name].rawCppValue = constantValue
+
+			return nil, engine.registeredConstants[name].validate()
 		})
 
 		if err != nil {
@@ -547,33 +358,32 @@ var EmbindRegisterEnum = &wasm.HostFunc{
 		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
 		rawType := api.DecodeI32(stack[0])
-		//size := api.DecodeI32(stack[2])
-		//shift := getShiftFromSize(size)
 		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		log.Printf("enum: %d", rawType)
+		_, ok := engine.registeredEnums[name]
+		if !ok {
+			engine.registeredEnums[name] = &enumType{
+				valuesByName:     map[string]*enumValue{},
+				valuesByCppValue: map[any]*enumValue{},
+				valuesByGoValue:  map[any]*enumValue{},
+			}
+		}
 
-		err = engine.registerType(rawType, &registeredType{
-			rawType: rawType,
-			name:    name,
-			fromWireType: func(ctx context.Context, mod api.Module, value uint64) (any, error) {
-				// @todo: implement me.
-				return nil, nil
-			},
-			toWireType: func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
-				// @todo: implement me.
-				return 0, nil
-			},
+		engine.registeredEnums[name].baseType = baseType{
+			rawType:        rawType,
+			name:           name,
 			argPackAdvance: 8,
-			// @todo: implement readValueFromPointer
-		}, nil)
+		}
 
-		engine.exposePublicSymbol(name, func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
-			return nil, nil
-		}, 0)
+		engine.registeredEnums[name].intHelper = intType{
+			size:   api.DecodeI32(stack[2]),
+			signed: api.DecodeI32(stack[3]) > 0,
+		}
+
+		err = engine.registerType(rawType, engine.registeredEnums[name], nil)
 	})},
 }
 
@@ -585,6 +395,42 @@ var EmbindRegisterEnumValue = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawEnumType", "name", "enumValue"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
 
+		rawType := api.DecodeI32(stack[0])
+		name, err := engine.readCString(uint32(api.DecodeI32(stack[1])))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+
+		registeredType, ok := engine.registeredTypes[rawType]
+		if !ok {
+			typeName, err := engine.getTypeName(ctx, rawType)
+			if err != nil {
+				panic(err)
+			}
+			panic(fmt.Errorf("%s has unknown type %s", name, typeName))
+		}
+
+		enumType := registeredType.(*enumType)
+		enumWireValue, err := enumType.intHelper.FromWireType(ctx, mod, stack[2])
+		if err != nil {
+			panic(fmt.Errorf("could not read value for enum %s", name))
+		}
+
+		_, ok = enumType.valuesByName[name]
+		if !ok {
+			enumType.valuesByName[name] = &enumValue{
+				name: name,
+			}
+		}
+
+		if enumType.valuesByName[name].hasCppValue {
+			panic(fmt.Errorf("enum value %s for enum %s was already registered", name, enumType.name))
+		}
+
+		enumType.valuesByName[name].hasCppValue = true
+		enumType.valuesByName[name].cppValue = enumWireValue
+		enumType.valuesByCppValue[enumWireValue] = enumType.valuesByName[name]
 	})},
 }

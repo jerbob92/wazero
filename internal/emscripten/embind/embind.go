@@ -9,6 +9,8 @@ import (
 
 type Engine interface {
 	CallFunction(ctx context.Context, name string, arguments ...any) (any, error)
+	RegisterConstant(name string, val any) error
+	RegisterEnum(name string, val Enum) error
 }
 
 func GetEngineFromContext(ctx context.Context) (Engine, error) {
@@ -53,8 +55,10 @@ type EngineKey struct{}
 func CreateEngine() Engine {
 	return &engine{
 		publicSymbols:        map[string]*publicSymbol{},
-		registeredTypes:      map[int32]*registeredType{},
+		registeredTypes:      map[int32]registeredType{},
 		typeDependencies:     map[int32][]int32{},
 		awaitingDependencies: map[int32][]*awaitingDependency{},
+		registeredConstants:  map[string]*registeredConstant{},
+		registeredEnums:      map[string]*enumType{},
 	}
 }

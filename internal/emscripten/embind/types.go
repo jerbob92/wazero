@@ -7,15 +7,45 @@ import (
 
 type publicSymbolFn func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error)
 
-type registeredType struct {
-	rawType              int32
-	name                 string
-	isVoid               bool
-	destructorFunction   func(ctx context.Context, mod api.Module, pointer uint32) error
-	fromWireType         func(ctx context.Context, mod api.Module, wt uint64) (any, error)
-	toWireType           func(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error)
-	argPackAdvance       int32
-	readValueFromPointer func(ctx context.Context, mod api.Module, pointer uint32) (any, error)
+type baseType struct {
+	rawType        int32
+	name           string
+	argPackAdvance int32
+}
+
+func (bt *baseType) RawType() int32 {
+	return bt.rawType
+}
+
+func (bt *baseType) Name() string {
+	return bt.name
+}
+
+func (bt *baseType) ArgPackAdvance() int32 {
+	return bt.argPackAdvance
+}
+
+func (bt *baseType) HasDestructorFunction() bool {
+	return false
+}
+
+func (bt *baseType) DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) error {
+	return nil
+}
+
+func (bt *baseType) ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
+	return nil, nil
+}
+
+type registeredType interface {
+	RawType() int32
+	Name() string
+	ArgPackAdvance() int32
+	HasDestructorFunction() bool
+	DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) error
+	FromWireType(ctx context.Context, mod api.Module, wt uint64) (any, error)
+	ToWireType(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error)
+	ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error)
 }
 
 type registerTypeOptions struct {
@@ -39,7 +69,9 @@ type classType struct {
 type engine struct {
 	mod                  api.Module
 	publicSymbols        map[string]*publicSymbol
-	registeredTypes      map[int32]*registeredType
+	registeredTypes      map[int32]registeredType
 	typeDependencies     map[int32][]int32
 	awaitingDependencies map[int32][]*awaitingDependency
+	registeredConstants  map[string]*registeredConstant
+	registeredEnums      map[string]*enumType
 }

@@ -24,6 +24,63 @@ func (e *engine) CallFunction(ctx context.Context, name string, arguments ...any
 	return res, nil
 }
 
+func (e *engine) RegisterConstant(name string, val any) error {
+	_, ok := e.registeredConstants[name]
+	if !ok {
+		e.registeredConstants[name] = &registeredConstant{
+			name: name,
+		}
+	}
+
+	if e.registeredConstants[name].hasGoValue {
+		return fmt.Errorf("constant %s is already registered", name)
+	}
+
+	e.registeredConstants[name].hasGoValue = true
+	e.registeredConstants[name].goValue = val
+
+	return e.registeredConstants[name].validate()
+}
+
+func (e *engine) RegisterEnum(name string, val Enum) error {
+	_, ok := e.registeredEnums[name]
+	if !ok {
+		e.registeredEnums[name] = &enumType{
+			valuesByName:     map[string]*enumValue{},
+			valuesByCppValue: map[any]*enumValue{},
+			valuesByGoValue:  map[any]*enumValue{},
+		}
+	}
+
+	registeredEnum := e.registeredEnums[name]
+
+	if registeredEnum.registeredInGo {
+		return fmt.Errorf("constant %s is already registered", name)
+	}
+
+	registeredEnum.registeredInGo = true
+
+	values := val.EmbindEnumValues()
+	for i := range values {
+		_, ok = registeredEnum.valuesByName[i]
+		if !ok {
+			registeredEnum.valuesByName[i] = &enumValue{
+				name: i,
+			}
+		}
+
+		if registeredEnum.valuesByName[i].hasGoValue {
+			return fmt.Errorf("enum value %s for enum %s was already registered", i, name)
+		}
+
+		registeredEnum.valuesByName[i].hasGoValue = true
+		registeredEnum.valuesByName[i].goValue = values[i]
+		registeredEnum.valuesByGoValue[values[i]] = registeredEnum.valuesByName[i]
+	}
+
+	return e.registeredEnums[name].validate()
+}
+
 func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32) (api.Function, error) {
 	// Not used in Wazero.
 	//signature, err := readCString(mod, uint32(signaturePtr))
@@ -62,8 +119,8 @@ func (e *engine) heap32VectorToArray(count, firstElement int32) ([]int32, error)
 	return array, nil
 }
 
-func (e *engine) registerType(rawType int32, registeredInstance *registeredType, options *registerTypeOptions) error {
-	name := registeredInstance.name
+func (e *engine) registerType(rawType int32, registeredInstance registeredType, options *registerTypeOptions) error {
+	name := registeredInstance.Name()
 	if rawType == 0 {
 		return fmt.Errorf("type \"%s\" must have a positive integer typeid pointer", name)
 	}
@@ -122,17 +179,17 @@ func (e *engine) ensureOverloadTable(methodName, humanName string) {
 	}
 }
 
-func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) {
+func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
 	_, ok := e.publicSymbols[name]
 	if ok {
 		_, ok = e.publicSymbols[name].overloadTable[numArguments]
 		if ok {
-			panic(fmt.Errorf("cannot register public name '%s' twice", name))
+			return fmt.Errorf("cannot register public name '%s' twice", name)
 		}
 
 		e.ensureOverloadTable(name, name)
 
-		// What does this actually do?
+		// What does this actually do? Looks like a bug in Emscripten JS.
 		//if (Module.hasOwnProperty(numArguments)) {
 		//	throwBindingError(`Cannot register multiple overloads of a function with the same number of arguments (${numArguments})!`);
 		//}
@@ -148,6 +205,8 @@ func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context,
 			fn:       value,
 		}
 	}
+
+	return nil
 }
 
 func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
@@ -172,12 +231,12 @@ func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context
 	return nil
 }
 
-func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, getTypeConverters func([]*registeredType) ([]*registeredType, error)) error {
+func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, getTypeConverters func([]registeredType) ([]registeredType, error)) error {
 	for i := range myTypes {
 		e.typeDependencies[myTypes[i]] = dependentTypes
 	}
 
-	onComplete := func(typeConverters []*registeredType) error {
+	onComplete := func(typeConverters []registeredType) error {
 		var myTypeConverters, err = getTypeConverters(typeConverters)
 		if err != nil {
 			return err
@@ -197,7 +256,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 		return nil
 	}
 
-	typeConverters := make([]*registeredType, len(dependentTypes))
+	typeConverters := make([]registeredType, len(dependentTypes))
 	unregisteredTypes := make([]int32, 0)
 	registered := 0
 
@@ -242,7 +301,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 	return nil
 }
 
-func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
 	// humanName: a human-readable string name for the function to be generated.
 	// argTypes: An array that contains the embind type objects for all types in the function signature.
 	//    argTypes[0] is the type object for the function return value.
@@ -272,13 +331,13 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredTy
 	// TODO: Remove this completely once all function invokers are being dynamically generated.
 	needsDestructorStack := false
 	for i := 1; i < len(argTypes); i++ { // Skip return value at index 0 - it's not deleted here.
-		if argTypes[i] != nil && argTypes[i].destructorFunction != nil { // The type does not define a destructor function - must use dynamic stack
+		if argTypes[i] != nil && argTypes[i].HasDestructorFunction() { // The type does not define a destructor function - must use dynamic stack
 			needsDestructorStack = true
 			break
 		}
 	}
 
-	returns := argTypes[0].name != "void"
+	returns := argTypes[0].Name() != "void"
 
 	return func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
 		if len(arguments) != argCount-2 {
@@ -300,7 +359,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredTy
 		var err error
 
 		if isClassMethodFunc {
-			thisWired, err = classParam.toWireType(ctx, mod, destructors, this)
+			thisWired, err = classParam.ToWireType(ctx, mod, destructors, this)
 			if err != nil {
 				return nil, fmt.Errorf("could not get wire type of class param: %w", err)
 			}
@@ -308,9 +367,9 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredTy
 
 		argsWired := make([]uint64, argCount-2)
 		for i := 0; i < argCount-2; i++ {
-			argsWired[i], err = argTypes[i+2].toWireType(ctx, mod, destructors, arguments[i])
+			argsWired[i], err = argTypes[i+2].ToWireType(ctx, mod, destructors, arguments[i])
 			if err != nil {
-				return nil, fmt.Errorf("could not get wire type of argument %d (%s): %w", i, argTypes[i+2].name, err)
+				return nil, fmt.Errorf("could not get wire type of argument %d (%s): %w", i, argTypes[i+2].Name(), err)
 			}
 		}
 
@@ -337,8 +396,8 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredTy
 				startArg = 1
 			}
 			for i := startArg; i < len(argTypes); i++ {
-				if argTypes[i].destructorFunction != nil {
-					err = argTypes[i].destructorFunction(ctx, mod, api.DecodeU32(callArgs[i]))
+				if argTypes[i].HasDestructorFunction() {
+					err = argTypes[i].DestructorFunction(ctx, mod, api.DecodeU32(callArgs[i]))
 					if err != nil {
 						return nil, err
 					}
@@ -347,9 +406,9 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []*registeredTy
 		}
 
 		if returns {
-			returnVal, err := retType.fromWireType(ctx, e.mod, res[0])
+			returnVal, err := retType.FromWireType(ctx, e.mod, res[0])
 			if err != nil {
-				return nil, fmt.Errorf("could not get wire type of return value (%s): %w", retType.name, err)
+				return nil, fmt.Errorf("could not get wire type of return value (%s): %w", retType.Name(), err)
 			}
 
 			return returnVal, nil
@@ -373,21 +432,6 @@ func (e *engine) runDestructors(ctx context.Context, destructors []*destructorFu
 	}
 
 	return nil
-}
-
-func (e *engine) getShiftFromSize(size int32) (int32, error) {
-	switch size {
-	case 1:
-		return 0, nil
-	case 2:
-		return 1, nil
-	case 4:
-		return 2, nil
-	case 8:
-		return 3, nil
-	default:
-		return 0, fmt.Errorf("unknown type size: %d", size)
-	}
 }
 
 // readCString reads a C string by reading byte per byte until it sees a NULL
