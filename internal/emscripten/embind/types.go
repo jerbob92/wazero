@@ -5,7 +5,7 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-type publicSymbolFn func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error)
+type publicSymbolFn func(ctx context.Context, this any, arguments ...any) (any, error)
 
 type baseType struct {
 	rawType        int32

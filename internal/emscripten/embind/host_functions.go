@@ -45,7 +45,7 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 		}
 
 		// Set a default callback that errors out when not all types are resolved.
-		err = engine.exposePublicSymbol(name, func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+		err = engine.exposePublicSymbol(name, func(ctx context.Context, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), argTypes)
 		}, argCount-1)
 		if err != nil {

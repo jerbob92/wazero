@@ -16,7 +16,7 @@ func (e *engine) CallFunction(ctx context.Context, name string, arguments ...any
 		return nil, fmt.Errorf("could not find public symbol %s", name)
 	}
 
-	res, err := e.publicSymbols[name].fn(ctx, e.mod, nil, arguments...)
+	res, err := e.publicSymbols[name].fn(ctx, nil, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("error while calling embind function %s: %w", name, err)
 	}
@@ -157,7 +157,7 @@ func (e *engine) ensureOverloadTable(methodName, humanName string) {
 		prevArgCount := e.publicSymbols[methodName].argCount
 
 		// Inject an overload resolver function that routes to the appropriate overload based on the number of arguments.
-		e.publicSymbols[methodName].fn = func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+		e.publicSymbols[methodName].fn = func(ctx context.Context, this any, arguments ...any) (any, error) {
 			_, ok := e.publicSymbols[methodName].overloadTable[int32(len(arguments))]
 			if !ok {
 				possibleOverloads := make([]string, len(e.publicSymbols[methodName].overloadTable))
@@ -167,7 +167,7 @@ func (e *engine) ensureOverloadTable(methodName, humanName string) {
 				return nil, fmt.Errorf("function '%s' called with an invalid number of arguments (%d) - expects one of (%s)", humanName, len(arguments), strings.Join(possibleOverloads, ", "))
 			}
 
-			return e.publicSymbols[methodName].overloadTable[int32(len(arguments))].fn(ctx, mod, this, arguments)
+			return e.publicSymbols[methodName].overloadTable[int32(len(arguments))].fn(ctx, e.mod, this, arguments)
 		}
 
 		// Move the previous function into the overload table.
@@ -179,7 +179,7 @@ func (e *engine) ensureOverloadTable(methodName, humanName string) {
 	}
 }
 
-func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
+func (e *engine) exposePublicSymbol(name string, value publicSymbolFn, numArguments int32) error {
 	_, ok := e.publicSymbols[name]
 	if ok {
 		_, ok = e.publicSymbols[name].overloadTable[numArguments]
@@ -209,7 +209,7 @@ func (e *engine) exposePublicSymbol(name string, value func(ctx context.Context,
 	return nil
 }
 
-func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error), numArguments int32) error {
+func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, this any, arguments ...any) (any, error), numArguments int32) error {
 	_, ok := e.publicSymbols[name]
 	if !ok {
 		return fmt.Errorf("tried to replace a nonexistant public symbol %s", name)
@@ -301,7 +301,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 	return nil
 }
 
-func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) publicSymbolFn {
 	// humanName: a human-readable string name for the function to be generated.
 	// argTypes: An array that contains the embind type objects for all types in the function signature.
 	//    argTypes[0] is the type object for the function return value.
@@ -339,7 +339,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 
 	returns := argTypes[0].Name() != "void"
 
-	return func(ctx context.Context, mod api.Module, this any, arguments ...any) (any, error) {
+	return func(ctx context.Context, this any, arguments ...any) (any, error) {
 		if len(arguments) != argCount-2 {
 			return nil, fmt.Errorf("function %s called with %d arguments, expected %d args", humanName, len(arguments), argCount-2)
 		}
@@ -359,7 +359,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 		var err error
 
 		if isClassMethodFunc {
-			thisWired, err = classParam.ToWireType(ctx, mod, destructors, this)
+			thisWired, err = classParam.ToWireType(ctx, e.mod, destructors, this)
 			if err != nil {
 				return nil, fmt.Errorf("could not get wire type of class param: %w", err)
 			}
@@ -367,7 +367,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 
 		argsWired := make([]uint64, argCount-2)
 		for i := 0; i < argCount-2; i++ {
-			argsWired[i], err = argTypes[i+2].ToWireType(ctx, mod, destructors, arguments[i])
+			argsWired[i], err = argTypes[i+2].ToWireType(ctx, e.mod, destructors, arguments[i])
 			if err != nil {
 				return nil, fmt.Errorf("could not get wire type of argument %d (%s): %w", i, argTypes[i+2].Name(), err)
 			}
@@ -397,7 +397,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 			}
 			for i := startArg; i < len(argTypes); i++ {
 				if argTypes[i].HasDestructorFunction() {
-					err = argTypes[i].DestructorFunction(ctx, mod, api.DecodeU32(callArgs[i]))
+					err = argTypes[i].DestructorFunction(ctx, e.mod, api.DecodeU32(callArgs[i]))
 					if err != nil {
 						return nil, err
 					}
