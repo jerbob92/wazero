@@ -17,3 +17,11 @@ type EngineKey = embind_internal.EngineKey
 func CreateEngine() Engine {
 	return embind_internal.CreateEngine()
 }
+
+type EmvalConstructor interface {
+	embind_internal.EmvalConstructor
+}
+
+type EmvalFunctionMapper interface {
+	embind_internal.EmvalFunctionMapper
+}

@@ -20,16 +20,71 @@ func (bt *boolType) FromWireType(ctx context.Context, mod api.Module, value uint
 }
 
 func (bt *boolType) ToWireType(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {
+	if o == nil || o == undefined {
+		return api.EncodeI32(bt.falseVal), nil
+	}
+
 	val, ok := o.(bool)
-	if !ok {
-		return 0, fmt.Errorf("value must be of type bool")
+	if ok {
+		if val {
+			return api.EncodeI32(bt.trueVal), nil
+		}
+		return api.EncodeI32(bt.falseVal), nil
 	}
 
-	if val {
-		return api.EncodeI32(bt.trueVal), nil
+	// Float64 is big enough for any number.
+	numberVal := float64(0)
+	hasNumberVal := false
+	switch v := o.(type) {
+	case int:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case uint:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case int8:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case uint8:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case int16:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case uint16:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case int32:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case uint32:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case int64:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case uint64:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case float32:
+		numberVal = float64(v)
+		hasNumberVal = true
+	case float64:
+		numberVal = v
+		hasNumberVal = true
 	}
 
-	return api.EncodeI32(bt.falseVal), nil
+	if hasNumberVal {
+		if numberVal > 0 {
+			return api.EncodeI32(bt.trueVal), nil
+		}
+		return api.EncodeI32(bt.falseVal), nil
+	}
+
+	// @todo: implement nil pointer check
+
+	// Any other type could be considered true?
+	return api.EncodeI32(bt.trueVal), nil
 }
 
 func (bt *boolType) ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error) {

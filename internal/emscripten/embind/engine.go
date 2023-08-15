@@ -81,6 +81,15 @@ func (e *engine) RegisterEnum(name string, val Enum) error {
 	return e.registeredEnums[name].validate()
 }
 
+func (e *engine) RegisterSymbol(name string, symbol any) error {
+	existingSymbol, ok := e.emvalEngine.globals[name]
+	if ok {
+		return fmt.Errorf("could not register symbol %s, already registered as type %T", name, existingSymbol)
+	}
+	e.emvalEngine.globals[name] = symbol
+	return nil
+}
+
 func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32) (api.Function, error) {
 	// Not used in Wazero.
 	//signature, err := readCString(mod, uint32(signaturePtr))
@@ -545,4 +554,25 @@ func (e *engine) createUnboundTypeError(ctx context.Context, message string, typ
 	}
 
 	return fmt.Errorf("%s: %s", message, strings.Join(typeNames, ", "))
+}
+
+func (e *engine) getStringOrSymbol(address uint32) (string, error) {
+	symbol, ok := e.emvalEngine.symbols[address]
+	if ok {
+		return symbol, nil
+	}
+	return e.readCString(address)
+}
+
+func (e *engine) requireRegisteredType(ctx context.Context, rawType int32, humanName string) (registeredType, error) {
+	registeredType, ok := e.registeredTypes[rawType]
+	if !ok {
+		typeName, err := e.getTypeName(ctx, rawType)
+		if err != nil {
+			panic(err)
+		}
+		return nil, fmt.Errorf("%s has unknown type %s", humanName, typeName)
+	}
+
+	return registeredType, nil
 }

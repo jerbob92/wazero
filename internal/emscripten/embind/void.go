@@ -11,7 +11,7 @@ type voidType struct {
 }
 
 func (vt *voidType) FromWireType(ctx context.Context, mod api.Module, value uint64) (any, error) {
-	return nil, nil
+	return undefined, nil
 }
 
 func (vt *voidType) ToWireType(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error) {

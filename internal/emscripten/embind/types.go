@@ -37,6 +37,14 @@ func (bt *baseType) ReadValueFromPointer(ctx context.Context, mod api.Module, po
 	return nil, nil
 }
 
+func (bt *baseType) HasDeleteObject() bool {
+	return false
+}
+
+func (bt *baseType) DeleteObject(ctx context.Context, mod api.Module, handle any) error {
+	return nil
+}
+
 type registeredType interface {
 	RawType() int32
 	Name() string
@@ -46,6 +54,8 @@ type registeredType interface {
 	FromWireType(ctx context.Context, mod api.Module, wt uint64) (any, error)
 	ToWireType(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error)
 	ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error)
+	HasDeleteObject() bool
+	DeleteObject(ctx context.Context, mod api.Module, handle any) error
 }
 
 type registerTypeOptions struct {
@@ -74,4 +84,9 @@ type engine struct {
 	awaitingDependencies map[int32][]*awaitingDependency
 	registeredConstants  map[string]*registeredConstant
 	registeredEnums      map[string]*enumType
+	emvalEngine          *emvalEngine
 }
+
+type undefinedType int8
+
+var undefined = undefinedType(0)

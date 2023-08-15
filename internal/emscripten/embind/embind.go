@@ -11,6 +11,7 @@ type Engine interface {
 	CallFunction(ctx context.Context, name string, arguments ...any) (any, error)
 	RegisterConstant(name string, val any) error
 	RegisterEnum(name string, val Enum) error
+	RegisterSymbol(name string, symbol any) error
 }
 
 func GetEngineFromContext(ctx context.Context) (Engine, error) {
@@ -60,5 +61,6 @@ func CreateEngine() Engine {
 		awaitingDependencies: map[int32][]*awaitingDependency{},
 		registeredConstants:  map[string]*registeredConstant{},
 		registeredEnums:      map[string]*enumType{},
+		emvalEngine:          createEmvalEngine(),
 	}
 }

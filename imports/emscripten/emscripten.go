@@ -111,6 +111,20 @@ func NewFunctionExporterForModule(guest wazero.CompiledModule) (FunctionExporter
 		embind_internal.FunctionEmbindRegisterConstant:   embind_internal.EmbindRegisterConstant,
 		embind_internal.FunctionEmbindRegisterEnum:       embind_internal.EmbindRegisterEnum,
 		embind_internal.FunctionEmbindRegisterEnumValue:  embind_internal.EmbindRegisterEnumValue,
+		embind_internal.FunctionEmvalTakeValue:           embind_internal.EmvalTakeValue,
+		embind_internal.FunctionEmvalIncref:              embind_internal.EmvalIncref,
+		embind_internal.FunctionEmvalDecref:              embind_internal.EmvalDecref,
+		embind_internal.FunctionEmvalGetGlobal:           embind_internal.EmvalGetGlobal,
+		embind_internal.FunctionEmvalAs:                  embind_internal.EmvalAs,
+		embind_internal.FunctionEmvalNew:                 embind_internal.EmvalNew,
+		embind_internal.FunctionEmvalSetProperty:         embind_internal.EmvalSetProperty,
+		embind_internal.FunctionEmvalNewCString:          embind_internal.EmvalNewCString,
+		embind_internal.FunctionEmvalGetProperty:         embind_internal.EmvalGetProperty,
+		embind_internal.FunctionEmvalRunDestructors:      embind_internal.EmvalRunDestructors,
+		embind_internal.FunctionEmvalCallMethod:          embind_internal.EmvalCallMethod,
+		embind_internal.FunctionEmvalGetMethodCaller:     embind_internal.EmvalGetMethodCaller,
+		embind_internal.FunctionEmvalCallVoidMethod:      embind_internal.EmvalCallVoidMethod,
+		embind_internal.FunctionEmvalRegisterSymbol:      embind_internal.EmvalRegisterSymbol,
 	}
 	ret := emscriptenFns{}
 	for _, fn := range guest.ImportedFunctions() {
