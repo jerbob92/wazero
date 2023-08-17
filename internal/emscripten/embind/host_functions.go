@@ -1028,3 +1028,360 @@ var EmvalCallVoidMethod = &wasm.HostFunc{
 		}
 	})},
 }
+
+const FunctionEmbindRegisterClass = "_embind_register_class"
+
+var EmvalRegisterClass = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterClass,
+	Name:       FunctionEmbindRegisterClass,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{"rawType", "rawPointerType", "rawConstPointerType", "baseClassRawType", "getActualTypeSignature", "getActualType", "upcastSignature", "upcast", "downcastSignature", "downcast", "name", "destructorSignature", "rawDestructor"},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawType := api.DecodeI32(stack[0])
+		rawPointerType := api.DecodeI32(stack[1])
+		rawConstPointerType := api.DecodeI32(stack[2])
+		baseClassRawType := api.DecodeI32(stack[3])
+		namePtr := api.DecodeI32(stack[10])
+
+		name, err := engine.readCString(uint32(namePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+		/*
+			getActualTypeSignature := api.DecodeI32(stack[4])
+			getActualType := api.DecodeI32(stack[5])
+			upcastSignature := api.DecodeI32(stack[6])
+			upcast := api.DecodeI32(stack[7])
+			downcastSignature := api.DecodeI32(stack[8])
+			downcast := api.DecodeI32(stack[9])
+			destructorSignature := api.DecodeI32(stack[11])
+			rawDestructor := api.DecodeI32(stack[12])
+
+
+		*/
+		/*
+			getActualTypeFunc, err := engine.newInvokeFunc(getActualTypeSignature, getActualType)
+			if err != nil {
+				panic(fmt.Errorf("could not read getActualType: %w", err))
+			}
+
+			var upcastFunc api.Function
+			if upcast > 0 {
+				upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast)
+				if err != nil {
+					panic(fmt.Errorf("could not read upcast: %w", err))
+				}
+			}
+
+			var downcastFunc api.Function
+			if downcast > 0 {
+				downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast)
+				if err != nil {
+					panic(fmt.Errorf("could not read downcast: %w", err))
+				}
+			}
+
+			rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+			if err != nil {
+				panic(fmt.Errorf("could not read rawDestructor: %w", err))
+			}
+		*/
+
+		// Set a default callback that errors out when not all types are resolved.
+		err = engine.exposePublicSymbol(name, func(ctx context.Context, this any, arguments ...any) (any, error) {
+			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), []int32{baseClassRawType})
+		}, 0)
+		if err != nil {
+			panic(fmt.Errorf("could not expose public symbol: %w", err))
+		}
+
+		dependentTypes := []int32{}
+		if baseClassRawType > 0 {
+			dependentTypes = append(dependentTypes, baseClassRawType)
+		}
+
+		err = engine.whenDependentTypesAreResolved([]int32{rawType, rawPointerType, rawConstPointerType}, dependentTypes, func(argTypes []registeredType) ([]registeredType, error) {
+			//base := argTypes[0]
+
+			/*
+			   var baseClass;
+			   var basePrototype;
+			   if (baseClassRawType) {
+			     baseClass = base.registeredClass;
+			     basePrototype = baseClass.instancePrototype;
+			   } else {
+			     basePrototype = ClassHandle.prototype;
+			   }
+
+			   var constructor = createNamedFunction(legalFunctionName, function() {
+			     if (Object.getPrototypeOf(this) !== instancePrototype) {
+			       throw new BindingError("Use 'new' to construct " + name);
+			     }
+			     if (undefined === registeredClass.constructor_body) {
+			       throw new BindingError(name + " has no accessible constructor");
+			     }
+			     var body = registeredClass.constructor_body[arguments.length];
+			     if (undefined === body) {
+			       throw new BindingError(`Tried to invoke ctor of ${name} with invalid number of parameters (${arguments.length}) - expected (${Object.keys(registeredClass.constructor_body).toString()}) parameters instead!`);
+			     }
+			     return body.apply(this, arguments);
+			   });
+
+			   var instancePrototype = Object.create(basePrototype, {
+			     constructor: { value: constructor },
+			   });
+
+			   constructor.prototype = instancePrototype;
+
+			   var registeredClass = new RegisteredClass(name,
+			                                             constructor,
+			                                             instancePrototype,
+			                                             rawDestructor,
+			                                             baseClass,
+			                                             getActualType,
+			                                             upcast,
+			                                             downcast);
+
+			   if (registeredClass.baseClass) {
+			     // Keep track of class hierarchy. Used to allow sub-classes to inherit class functions.
+			     if (registeredClass.baseClass.__derivedClasses === undefined) {
+			       registeredClass.baseClass.__derivedClasses = [];
+			     }
+
+			     registeredClass.baseClass.__derivedClasses.push(registeredClass);
+			   }
+
+			   var referenceConverter = new RegisteredPointer(name,
+			                                                  registeredClass,
+			                                                  true,
+			                                                  false,
+			                                                  false);
+
+			   var pointerConverter = new RegisteredPointer(name + '*',
+			                                                registeredClass,
+			                                                false,
+			                                                false,
+			                                                false);
+
+			   var constPointerConverter = new RegisteredPointer(name + ' const*',
+			                                                     registeredClass,
+			                                                     false,
+			                                                     true,
+			                                                     false);
+
+			   registeredPointers[rawType] = {
+			     pointerType: pointerConverter,
+			     constPointerType: constPointerConverter
+			   };
+
+			   replacePublicSymbol(legalFunctionName, constructor);
+
+			   return [referenceConverter, pointerConverter, constPointerConverter];
+			*/
+			return nil, nil
+		})
+
+		// @todo: implement me.
+		log.Printf("%s: %s", FunctionEmbindRegisterClass, name)
+	})},
+}
+
+const FunctionEmbindRegisterClassConstructor = "_embind_register_class_constructor"
+
+var EmbindRegisterClassConstructor = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterClassConstructor,
+	Name:       FunctionEmbindRegisterClassConstructor,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{"rawClassType", "argCount", "rawArgTypesAddr", "invokerSignature", "invoker", "rawConstructor"},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterClassConstructor)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterClassFunction = "_embind_register_class_function"
+
+var EmbindRegisterClassFunction = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterClassFunction,
+	Name:       FunctionEmbindRegisterClassFunction,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawClassType",
+		"methodName",
+		"argCount",
+		"rawArgTypesAddr", // [ReturnType, ThisType, Args...]
+		"invokerSignature",
+		"rawInvoker",
+		"context",
+		"isPureVirtual",
+		"isAsync",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterClassFunction)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterClassClassFunction = "_embind_register_class_class_function"
+
+var EmbindRegisterClassClassFunction = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterClassClassFunction,
+	Name:       FunctionEmbindRegisterClassClassFunction,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawClassType",
+		"methodName",
+		"argCount",
+		"rawArgTypesAddr", // [ReturnType, ThisType, Args...]
+		"invokerSignature",
+		"rawInvoker",
+		"fn",
+		"isAsync",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterClassClassFunction)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterClassProperty = "_embind_register_class_property"
+
+var EmbindRegisterClassProperty = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterClassProperty,
+	Name:       FunctionEmbindRegisterClassProperty,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"classType",
+		"fieldName",
+		"getterReturnType",
+		"getterSignature",
+		"getter",
+		"getterContext",
+		"setterArgumentType",
+		"setterSignature",
+		"setter",
+		"setterContext",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterClassProperty)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterValueArray = "_embind_register_value_array"
+
+var EmbindRegisterValueArray = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterValueArray,
+	Name:       FunctionEmbindRegisterValueArray,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawType",
+		"name",
+		"constructorSignature",
+		"rawConstructor",
+		"destructorSignature",
+		"rawDestructor",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterValueArray)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterValueArrayElement = "_embind_register_value_array_element"
+
+var EmbindRegisterValueArrayElement = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterValueArrayElement,
+	Name:       FunctionEmbindRegisterValueArrayElement,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawTupleType",
+		"getterReturnType",
+		"getterSignature",
+		"getter",
+		"getterContext",
+		"setterArgumentType",
+		"setterSignature",
+		"setter",
+		"setterContext",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterValueArrayElement)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindFinalizeValueArray = "_embind_finalize_value_array"
+
+var EmbindFinalizeValueArray = &wasm.HostFunc{
+	ExportName: FunctionEmbindFinalizeValueArray,
+	Name:       FunctionEmbindFinalizeValueArray,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawTupleType",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindFinalizeValueArray)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterValueObject = "_embind_register_value_object"
+
+var EmbindRegisterValueObject = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterValueObject,
+	Name:       FunctionEmbindRegisterValueObject,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"rawType",
+		"name",
+		"constructorSignature",
+		"rawConstructor",
+		"destructorSignature",
+		"rawDestructor",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterValueObject)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindRegisterValueObjectField = "_embind_register_value_object_field"
+
+var EmbindRegisterValueObjectField = &wasm.HostFunc{
+	ExportName: FunctionEmbindRegisterValueObjectField,
+	Name:       FunctionEmbindRegisterValueObjectField,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
+	ParamNames: []string{
+		"structType",
+		"fieldName",
+		"getterReturnType",
+		"getterSignature",
+		"getter",
+		"getterContext",
+		"setterArgumentType",
+		"setterSignature",
+		"setter",
+		"setterContext",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindRegisterValueObjectField)
+		// @todo: implement me.
+	})},
+}
+
+const FunctionEmbindFinalizeValueObject = "_embind_finalize_value_object"
+
+var EmbindFinalizeValueObject = &wasm.HostFunc{
+	ExportName: FunctionEmbindFinalizeValueObject,
+	Name:       FunctionEmbindFinalizeValueObject,
+	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32},
+	ParamNames: []string{
+		"structType",
+	},
+	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		log.Println(FunctionEmbindFinalizeValueObject)
+		// @todo: implement me.
+	})},
+}
