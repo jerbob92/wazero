@@ -29,8 +29,8 @@ func (bt *baseType) HasDestructorFunction() bool {
 	return false
 }
 
-func (bt *baseType) DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) error {
-	return nil
+func (bt *baseType) DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) (*destructorFunc, error) {
+	return nil, nil
 }
 
 func (bt *baseType) ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error) {
@@ -50,7 +50,7 @@ type registeredType interface {
 	Name() string
 	ArgPackAdvance() int32
 	HasDestructorFunction() bool
-	DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) error
+	DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) (*destructorFunc, error)
 	FromWireType(ctx context.Context, mod api.Module, wt uint64) (any, error)
 	ToWireType(ctx context.Context, mod api.Module, destructors *[]*destructorFunc, o any) (uint64, error)
 	ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error)
@@ -67,7 +67,7 @@ type awaitingDependency struct {
 }
 
 type publicSymbol struct {
-	argCount      int32
+	argCount      *int32
 	overloadTable map[int32]*publicSymbol
 	fn            publicSymbolFn
 	className     string
@@ -76,6 +76,43 @@ type publicSymbol struct {
 type registeredPointer struct {
 	pointerType      *registeredPointerType
 	constPointerType *registeredPointerType
+}
+
+type registeredTuple struct {
+	name           string
+	rawConstructor api.Function
+	rawDestructor  api.Function
+	elements       []*registeredTupleElement
+}
+
+type registeredTupleElement struct {
+	getterReturnType   int32
+	getter             api.Function
+	getterContext      int32
+	setterArgumentType int32
+	setter             api.Function
+	setterContext      int32
+	read               func(ctx context.Context, mod api.Module, ptr int32) (any, error)
+	write              func(ctx context.Context, mod api.Module, ptr int32, o any) error
+}
+
+type registeredObject struct {
+	name           string
+	rawConstructor api.Function
+	rawDestructor  api.Function
+	fields         []*registeredObjectField
+}
+
+type registeredObjectField struct {
+	fieldName          string
+	getterReturnType   int32
+	getter             api.Function
+	getterContext      int32
+	setterArgumentType int32
+	setter             api.Function
+	setterContext      int32
+	read               func(ctx context.Context, mod api.Module, ptr int32) (any, error)
+	write              func(ctx context.Context, mod api.Module, ptr int32, o any) error
 }
 
 type engine struct {
@@ -88,6 +125,9 @@ type engine struct {
 	registeredEnums      map[string]*enumType
 	registeredPointers   map[int32]*registeredPointer
 	registeredClasses    map[string]*classType
+	registeredTuples     map[int32]*registeredTuple
+	registeredObjects    map[int32]*registeredObject
+	registeredInstances  map[uint32]IEmvalClassBase
 	emvalEngine          *emvalEngine
 }
 

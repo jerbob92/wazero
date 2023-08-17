@@ -55,7 +55,9 @@ func (swst *stdWStringType) HasDestructorFunction() bool {
 	return true
 }
 
-func (swst *stdWStringType) DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) error {
-	_, err := mod.ExportedFunction("free").Call(ctx, api.EncodeU32(pointer))
-	return err
+func (swst *stdWStringType) DestructorFunction(ctx context.Context, mod api.Module, pointer uint32) (*destructorFunc, error) {
+	return &destructorFunc{
+		apiFunction: mod.ExportedFunction("free"),
+		args:        []uint64{api.EncodeU32(pointer)},
+	}, nil
 }

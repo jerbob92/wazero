@@ -64,6 +64,8 @@ func CreateEngine() Engine {
 		registeredEnums:      map[string]*enumType{},
 		registeredClasses:    map[string]*classType{},
 		registeredPointers:   map[int32]*registeredPointer{},
+		registeredTuples:     map[int32]*registeredTuple{},
+		registeredObjects:    map[int32]*registeredObject{},
 		emvalEngine:          createEmvalEngine(),
 	}
 }

@@ -46,10 +46,12 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 			panic(fmt.Errorf("could not create invoke func: %w", err))
 		}
 
+		publicSymbolArgs := argCount - 1
+
 		// Set a default callback that errors out when not all types are resolved.
 		err = engine.exposePublicSymbol(name, func(ctx context.Context, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), argTypes)
-		}, argCount-1)
+		}, &publicSymbolArgs)
 		if err != nil {
 			panic(fmt.Errorf("could not expose public symbol: %w", err))
 		}
@@ -59,7 +61,7 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 			invokerArgsArray := []registeredType{argTypes[0] /* return value */, nil /* no class 'this'*/}
 			invokerArgsArray = append(invokerArgsArray, argTypes[1:]... /* actual params */)
 
-			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, invokerFunc, fn, isAsync), argCount-1)
+			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, invokerFunc, fn, isAsync), &publicSymbolArgs)
 			if err != nil {
 				return nil, err
 			}
@@ -1088,7 +1090,7 @@ var EmvalRegisterClass = &wasm.HostFunc{
 		// Set a default callback that errors out when not all types are resolved.
 		err = engine.exposePublicSymbol(legalFunctionName, func(ctx context.Context, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), []int32{baseClassRawType})
-		}, 0)
+		}, nil)
 		if err != nil {
 			panic(fmt.Errorf("could not expose public symbol: %w", err))
 		}
@@ -1107,15 +1109,15 @@ var EmvalRegisterClass = &wasm.HostFunc{
 			} else {
 				engine.registeredClasses[name] = &classType{
 					baseType: baseType{
-						name:           name,
-						argPackAdvance: 8,
+						rawType: rawType,
+						name:    name,
 					},
 					pureVirtualFunctions: []string{},
 					methods:              map[string]*publicSymbol{},
+					properties:           map[string]*classProperty{},
 				}
 			}
 
-			engine.registeredClasses[name].baseType.rawType = rawType
 			engine.registeredClasses[name].rawDestructor = rawDestructorFunc
 			engine.registeredClasses[name].getActualType = getActualTypeFunc
 			engine.registeredClasses[name].upcast = upcastFunc
@@ -1173,10 +1175,28 @@ var EmvalRegisterClass = &wasm.HostFunc{
 				return nil, err
 			}
 
-			err = engine.exposePublicSymbol(legalFunctionName, func(ctx context.Context, this any, arguments ...any) (any, error) {
-				// @todo: implement me.
-				return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unimplemented constructor @TODO", name), []int32{baseClassRawType})
-			}, 0)
+			err = engine.replacePublicSymbol(legalFunctionName, func(ctx context.Context, this any, arguments ...any) (any, error) {
+				// @todo: implement me somehow?
+				// if (Object.getPrototypeOf(this) !== instancePrototype) {
+				// 	throw new BindingError("Use 'new' to construct " + name);
+				// }
+
+				if engine.registeredClasses[name].constructors == nil {
+					return nil, fmt.Errorf("%s has no accessible constructor", name)
+				}
+
+				fn, ok := engine.registeredClasses[name].constructors[int32(len(arguments))]
+				if !ok {
+					availableLengths := []string{}
+					for i := range engine.registeredClasses[name].constructors {
+						availableLengths = append(availableLengths, strconv.Itoa(int(i)))
+					}
+					return nil, fmt.Errorf("tried to invoke ctor of %s with invalid number of parameters (%d) - expected (%s) parameters instead", name, len(arguments), strings.Join(availableLengths, " or "))
+				}
+
+				return fn(ctx, mod, this, arguments)
+			}, nil)
+
 			if err != nil {
 				panic(fmt.Errorf("could not replace public symbol: %w", err))
 			}
@@ -1220,15 +1240,15 @@ var EmbindRegisterClassConstructor = &wasm.HostFunc{
 			classType := resolvedTypes[0].(*registeredPointerType)
 			humanName := "constructor " + classType.name
 
-			if classType.constructors == nil {
-				classType.constructors = map[int32]publicSymbolFn{}
+			if classType.registeredClass.constructors == nil {
+				classType.registeredClass.constructors = map[int32]publicSymbolFn{}
 			}
 
-			if _, ok := classType.constructors[argCount-1]; ok {
+			if _, ok := classType.registeredClass.constructors[argCount-1]; ok {
 				return nil, fmt.Errorf("cannot register multiple constructors with identical number of parameters (%d) for class '%s'! Overload resolution is currently only performed using the parameter count, not actual type info", argCount-1, classType.name)
 			}
 
-			classType.constructors[argCount-1] = func(ctx context.Context, this any, arguments ...any) (any, error) {
+			classType.registeredClass.constructors[argCount-1] = func(ctx context.Context, this any, arguments ...any) (any, error) {
 				return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", classType.name), rawArgTypes)
 			}
 
@@ -1239,7 +1259,7 @@ var EmbindRegisterClassConstructor = &wasm.HostFunc{
 					newArgtypes = append(newArgtypes, argTypes[1:]...)
 				}
 
-				classType.constructors[argCount-1] = engine.craftInvokerFunction(humanName, newArgtypes, nil, invokerFunc, rawConstructor, false)
+				classType.registeredClass.constructors[argCount-1] = engine.craftInvokerFunction(humanName, newArgtypes, nil, invokerFunc, rawConstructor, false)
 				return []registeredType{}, err
 			})
 
@@ -1314,11 +1334,12 @@ var EmbindRegisterClassFunction = &wasm.HostFunc{
 				},
 			}
 
+			newMethodArgCount := argCount - 2
 			existingMethod, ok := classType.registeredClass.methods[methodName]
-			if !ok || (existingMethod.overloadTable == nil && existingMethod.className != classType.name && existingMethod.argCount == argCount-2) {
+			if !ok || (existingMethod.overloadTable == nil && existingMethod.className != classType.name && *existingMethod.argCount == newMethodArgCount) {
 				// This is the first overload to be registered, OR we are replacing a
 				// function in the base class with a function in the derived class.
-				unboundTypesHandler.argCount = argCount - 2
+				unboundTypesHandler.argCount = &newMethodArgCount
 				unboundTypesHandler.className = classType.name
 				classType.registeredClass.methods[methodName] = unboundTypesHandler
 			} else {
@@ -1337,7 +1358,7 @@ var EmbindRegisterClassFunction = &wasm.HostFunc{
 				// are resolved. If multiple overloads are registered for this function, the function goes into an overload table.
 				if classType.registeredClass.methods[methodName].overloadTable == nil {
 					// Set argCount in case an overload is registered later
-					memberFunction.argCount = argCount - 2
+					memberFunction.argCount = &newMethodArgCount
 					classType.registeredClass.methods[methodName] = memberFunction
 				} else {
 					classType.registeredClass.methods[methodName].overloadTable[argCount-2] = memberFunction
@@ -1372,8 +1393,95 @@ var EmbindRegisterClassClassFunction = &wasm.HostFunc{
 		"isAsync",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterClassClassFunction)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawClassType := api.DecodeI32(stack[0])
+		methodNamePtr := api.DecodeI32(stack[1])
+		argCount := api.DecodeI32(stack[2])
+		rawArgTypesAddr := api.DecodeI32(stack[3])
+		invokerSignature := api.DecodeI32(stack[4])
+		rawInvoker := api.DecodeI32(stack[5])
+		fn := api.DecodeI32(stack[6])
+		isAsync := api.DecodeI32(stack[7])
+
+		rawArgTypes, err := engine.heap32VectorToArray(argCount, rawArgTypesAddr)
+		if err != nil {
+			panic(fmt.Errorf("could not read arg types: %w", err))
+		}
+
+		methodName, err := engine.readCString(uint32(methodNamePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read method name: %w", err))
+		}
+
+		rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(classTypes []registeredType) ([]registeredType, error) {
+			classType := classTypes[0].(*registeredPointerType)
+			humanName := classType.Name() + "." + methodName
+
+			if strings.HasPrefix(methodName, "@@") {
+				methodName = engine.emvalEngine.globals[strings.TrimPrefix(methodName, "@@")].(string)
+			}
+
+			unboundTypesHandler := &publicSymbol{
+				fn: func(ctx context.Context, this any, arguments ...any) (any, error) {
+					return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", humanName), rawArgTypes)
+				},
+			}
+
+			newArgCount := argCount - 1
+			_, ok := classType.registeredClass.methods[methodName]
+			if !ok {
+				// This is the first function to be registered with this name.
+				unboundTypesHandler.argCount = &newArgCount
+				classType.registeredClass.methods[methodName] = unboundTypesHandler
+			} else {
+				// There was an existing function with the same name registered. Set up
+				// a function overload routing table.
+				engine.ensureOverloadTable(classType.registeredClass.methods, methodName, humanName)
+				classType.registeredClass.methods[methodName].overloadTable[argCount-1] = unboundTypesHandler
+			}
+
+			err = engine.whenDependentTypesAreResolved([]int32{}, rawArgTypes, func(argTypes []registeredType) ([]registeredType, error) {
+				invokerArgsArray := []registeredType{argTypes[0], nil}
+				invokerArgsArray = append(invokerArgsArray, argTypes[1:]...)
+
+				memberFunction := &publicSymbol{
+					fn: engine.craftInvokerFunction(humanName, invokerArgsArray, nil, rawInvokerFunc, fn, isAsync > 0),
+				}
+
+				// Replace the initial unbound-handler-stub function with the appropriate member function, now that all types
+				// are resolved. If multiple overloads are registered for this function, the function goes into an overload table.
+				if classType.registeredClass.methods[methodName].overloadTable == nil {
+					// Set argCount in case an overload is registered later
+					memberFunction.argCount = &newArgCount
+					classType.registeredClass.methods[methodName] = memberFunction
+				} else {
+					classType.registeredClass.methods[methodName].overloadTable[argCount-1] = memberFunction
+				}
+
+				if classType.registeredClass.derivedClasses != nil {
+					for i := range classType.registeredClass.derivedClasses {
+						derivedClass := classType.registeredClass.derivedClasses[i]
+						_, ok := derivedClass.methods[methodName]
+						if !ok {
+							// TODO: Add support for overloads
+							derivedClass.methods[methodName] = memberFunction
+						}
+					}
+				}
+
+				return []registeredType{}, nil
+			})
+
+			return []registeredType{}, err
+		})
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
@@ -1396,8 +1504,119 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 		"setterContext",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterClassProperty)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		classType := api.DecodeI32(stack[0])
+		fieldNamePtr := api.DecodeI32(stack[1])
+		getterReturnType := api.DecodeI32(stack[2])
+		getterSignature := api.DecodeI32(stack[3])
+		getter := api.DecodeI32(stack[4])
+		getterContext := api.DecodeI32(stack[5])
+		setterArgumentType := api.DecodeI32(stack[6])
+		setterSignature := api.DecodeI32(stack[7])
+		setter := api.DecodeI32(stack[8])
+		setterContext := api.DecodeI32(stack[9])
+
+		fieldName, err := engine.readCString(uint32(fieldNamePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read method name: %w", err))
+		}
+
+		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{classType}, func(classTypes []registeredType) ([]registeredType, error) {
+			classType := classTypes[0].(*registeredPointerType)
+			humanName := classType.Name() + "." + fieldName
+
+			desc := &classProperty{
+				get: func(ctx context.Context, mod api.Module, this any) (any, error) {
+					return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot access %s due to unbound types", humanName), []int32{getterReturnType, setterArgumentType})
+				},
+				enumerable:   true,
+				configurable: true,
+			}
+
+			if setter > 0 {
+				desc.set = func(ctx context.Context, mod api.Module, this any, v any) error {
+					return engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot access %s due to unbound types", humanName), []int32{getterReturnType, setterArgumentType})
+				}
+			} else {
+				desc.set = func(ctx context.Context, mod api.Module, this any, v any) error {
+					return fmt.Errorf("%s is a read-only property", humanName)
+				}
+			}
+
+			classType.registeredClass.properties[fieldName] = desc
+
+			requiredTypes := []int32{getterReturnType}
+			if setter > 0 {
+				requiredTypes = append(requiredTypes, getterReturnType)
+			}
+
+			err = engine.whenDependentTypesAreResolved([]int32{}, requiredTypes, func(types []registeredType) ([]registeredType, error) {
+				getterReturnType := types[0]
+				desc := &classProperty{
+					get: func(ctx context.Context, mod api.Module, this any) (any, error) {
+						ptr, err := engine.validateThis(ctx, this, classType, humanName+" getter")
+						if err != nil {
+							return nil, err
+						}
+
+						res, err := getterFunc.Call(ctx, api.EncodeI32(getterContext), api.EncodeU32(ptr))
+						if err != nil {
+							return nil, err
+						}
+						return getterReturnType.FromWireType(ctx, mod, res[0])
+					},
+					enumerable: true,
+				}
+
+				if setter > 0 {
+					setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
+					if err != nil {
+						return nil, err
+					}
+
+					setterArgumentType := types[1]
+
+					desc.set = func(ctx context.Context, mod api.Module, this any, v any) error {
+						ptr, err := engine.validateThis(ctx, this, classType, humanName+" setter")
+						if err != nil {
+							return err
+						}
+
+						destructors := &[]*destructorFunc{}
+						setterRes, err := setterArgumentType.ToWireType(ctx, mod, destructors, v)
+						if err != nil {
+							return err
+						}
+
+						_, err = setterFunc.Call(ctx, api.EncodeI32(setterContext), api.EncodeU32(ptr), setterRes)
+						if err != nil {
+							return err
+						}
+
+						err = engine.runDestructors(ctx, *destructors)
+						if err != nil {
+							return err
+						}
+
+						return nil
+					}
+				}
+
+				classType.registeredClass.properties[fieldName] = desc
+
+				return []registeredType{}, err
+			})
+
+			return []registeredType{}, err
+		})
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
@@ -1416,8 +1635,35 @@ var EmbindRegisterValueArray = &wasm.HostFunc{
 		"rawDestructor",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterValueArray)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawType := api.DecodeI32(stack[0])
+		namePtr := api.DecodeI32(stack[1])
+		constructorSignature := api.DecodeI32(stack[2])
+		rawConstructor := api.DecodeI32(stack[3])
+		destructorSignature := api.DecodeI32(stack[4])
+		rawDestructor := api.DecodeI32(stack[5])
+
+		name, err := engine.readCString(uint32(namePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+
+		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		engine.registeredTuples[rawType] = &registeredTuple{
+			name:           name,
+			rawConstructor: rawConstructorFunc,
+			rawDestructor:  rawDestructorFunc,
+			elements:       []*registeredTupleElement{},
+		}
 	})},
 }
 
@@ -1439,8 +1685,35 @@ var EmbindRegisterValueArrayElement = &wasm.HostFunc{
 		"setterContext",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterValueArrayElement)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawTupleType := api.DecodeI32(stack[0])
+		getterReturnType := api.DecodeI32(stack[1])
+		getterSignature := api.DecodeI32(stack[2])
+		getter := api.DecodeI32(stack[3])
+		getterContext := api.DecodeI32(stack[4])
+		setterArgumentType := api.DecodeI32(stack[5])
+		setterSignature := api.DecodeI32(stack[6])
+		setter := api.DecodeI32(stack[7])
+		setterContext := api.DecodeI32(stack[8])
+
+		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		engine.registeredTuples[rawTupleType].elements = append(engine.registeredTuples[rawTupleType].elements, &registeredTupleElement{
+			getterReturnType:   getterReturnType,
+			getter:             getterFunc,
+			getterContext:      getterContext,
+			setterArgumentType: setterArgumentType,
+			setter:             setterFunc,
+			setterContext:      setterContext,
+		})
 	})},
 }
 
@@ -1454,8 +1727,69 @@ var EmbindFinalizeValueArray = &wasm.HostFunc{
 		"rawTupleType",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindFinalizeValueArray)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawTupleType := api.DecodeI32(stack[0])
+		reg := engine.registeredTuples[rawTupleType]
+		delete(engine.registeredTuples, rawTupleType)
+		elements := reg.elements
+		elementsLength := len(elements)
+
+		elementTypes := []int32{}
+		for i := range elements {
+			elementTypes = append(elementTypes, elements[i].getterReturnType)
+			elementTypes = append(elementTypes, elements[i].setterArgumentType)
+		}
+
+		err := engine.whenDependentTypesAreResolved([]int32{rawTupleType}, elementTypes, func(types []registeredType) ([]registeredType, error) {
+			for i := range elements {
+				getterReturnType := types[i]
+				getter := elements[i].getter
+				getterContext := elements[i].getterContext
+				setterArgumentType := types[i+elementsLength]
+				setter := elements[i].setter
+				setterContext := elements[i].setterContext
+				elements[i].read = func(ctx context.Context, mod api.Module, ptr int32) (any, error) {
+					res, err := getter.Call(ctx, api.EncodeI32(getterContext), api.EncodeI32(ptr))
+					if err != nil {
+						return nil, err
+					}
+					return getterReturnType.FromWireType(ctx, mod, res[0])
+				}
+				elements[i].write = func(ctx context.Context, mod api.Module, ptr int32, o any) error {
+					destructors := &[]*destructorFunc{}
+					res, err := setterArgumentType.ToWireType(ctx, mod, destructors, o)
+					if err != nil {
+						return err
+					}
+
+					_, err = setter.Call(ctx, api.EncodeI32(setterContext), api.EncodeI32(ptr), res)
+					if err != nil {
+						return err
+					}
+
+					err = engine.runDestructors(ctx, *destructors)
+					if err != nil {
+						return err
+					}
+
+					return nil
+				}
+			}
+
+			return []registeredType{
+				&arrayType{
+					baseType: baseType{
+						name:           reg.name,
+						argPackAdvance: 8,
+					},
+					reg:            reg,
+					elementsLength: elementsLength,
+				},
+			}, nil
+		})
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
@@ -1474,8 +1808,35 @@ var EmbindRegisterValueObject = &wasm.HostFunc{
 		"rawDestructor",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterValueObject)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawType := api.DecodeI32(stack[0])
+		namePtr := api.DecodeI32(stack[1])
+		constructorSignature := api.DecodeI32(stack[2])
+		rawConstructor := api.DecodeI32(stack[3])
+		destructorSignature := api.DecodeI32(stack[4])
+		rawDestructor := api.DecodeI32(stack[5])
+
+		name, err := engine.readCString(uint32(namePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read name: %w", err))
+		}
+
+		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		engine.registeredObjects[rawType] = &registeredObject{
+			name:           name,
+			rawConstructor: rawConstructorFunc,
+			rawDestructor:  rawDestructorFunc,
+			fields:         []*registeredObjectField{},
+		}
 	})},
 }
 
@@ -1498,8 +1859,42 @@ var EmbindRegisterValueObjectField = &wasm.HostFunc{
 		"setterContext",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterValueObjectField)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		structType := api.DecodeI32(stack[0])
+		fieldNamePtr := api.DecodeI32(stack[1])
+		getterReturnType := api.DecodeI32(stack[2])
+		getterSignature := api.DecodeI32(stack[3])
+		getter := api.DecodeI32(stack[4])
+		getterContext := api.DecodeI32(stack[5])
+		setterArgumentType := api.DecodeI32(stack[6])
+		setterSignature := api.DecodeI32(stack[7])
+		setter := api.DecodeI32(stack[8])
+		setterContext := api.DecodeI32(stack[9])
+
+		fieldName, err := engine.readCString(uint32(fieldNamePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read field name: %w", err))
+		}
+
+		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		engine.registeredObjects[structType].fields = append(engine.registeredObjects[structType].fields, &registeredObjectField{
+			fieldName:          fieldName,
+			getterReturnType:   getterReturnType,
+			getter:             getterFunc,
+			getterContext:      getterContext,
+			setterArgumentType: setterArgumentType,
+			setter:             setterFunc,
+			setterContext:      setterContext,
+		})
 	})},
 }
 
@@ -1513,7 +1908,67 @@ var EmbindFinalizeValueObject = &wasm.HostFunc{
 		"structType",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindFinalizeValueObject)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		structType := api.DecodeI32(stack[0])
+		reg := engine.registeredObjects[structType]
+		delete(engine.registeredObjects, structType)
+		fieldRecords := reg.fields
+
+		fieldTypes := []int32{}
+		for i := range fieldRecords {
+			fieldTypes = append(fieldTypes, fieldRecords[i].getterReturnType)
+			fieldTypes = append(fieldTypes, fieldRecords[i].setterArgumentType)
+		}
+
+		err := engine.whenDependentTypesAreResolved([]int32{structType}, fieldTypes, func(types []registeredType) ([]registeredType, error) {
+			for i := range fieldRecords {
+				getterReturnType := types[i]
+				getter := fieldRecords[i].getter
+				getterContext := fieldRecords[i].getterContext
+				setterArgumentType := types[i+len(fieldRecords)]
+				setter := fieldRecords[i].setter
+				setterContext := fieldRecords[i].setterContext
+
+				fieldRecords[i].read = func(ctx context.Context, mod api.Module, ptr int32) (any, error) {
+					res, err := getter.Call(ctx, api.EncodeI32(getterContext), api.EncodeI32(ptr))
+					if err != nil {
+						return nil, err
+					}
+					return getterReturnType.FromWireType(ctx, mod, res[0])
+				}
+				fieldRecords[i].write = func(ctx context.Context, mod api.Module, ptr int32, o any) error {
+					destructors := &[]*destructorFunc{}
+					res, err := setterArgumentType.ToWireType(ctx, mod, destructors, o)
+					if err != nil {
+						return err
+					}
+
+					_, err = setter.Call(ctx, api.EncodeI32(setterContext), api.EncodeI32(ptr), res)
+					if err != nil {
+						return err
+					}
+
+					err = engine.runDestructors(ctx, *destructors)
+					if err != nil {
+						return err
+					}
+
+					return nil
+				}
+			}
+
+			return []registeredType{
+				&objectType{
+					baseType: baseType{
+						name:           reg.name,
+						argPackAdvance: 8,
+					},
+					reg: reg,
+				},
+			}, nil
+		})
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }

@@ -92,7 +92,7 @@ func (e *engine) RegisterSymbol(name string, symbol any) error {
 }
 
 func (e *engine) RegisterClass(name string, goStruct any) error {
-	if _, ok := goStruct.(EmvalClassBase); !ok {
+	if _, ok := goStruct.(IEmvalClassBase); !ok {
 		return fmt.Errorf("could not register class %s with type %T, it does not embed embind.EmvalClassBase", name, goStruct)
 	}
 
@@ -103,12 +103,9 @@ func (e *engine) RegisterClass(name string, goStruct any) error {
 		}
 	} else {
 		e.registeredClasses[name] = &classType{
-			baseType: baseType{
-				name:           name,
-				argPackAdvance: 8,
-			},
 			pureVirtualFunctions: []string{},
 			methods:              map[string]*publicSymbol{},
+			properties:           map[string]*classProperty{},
 		}
 	}
 
@@ -215,17 +212,21 @@ func (e *engine) ensureOverloadTable(registry map[string]*publicSymbol, methodNa
 
 		// Move the previous function into the overload table.
 		e.publicSymbols[methodName].overloadTable = map[int32]*publicSymbol{}
-		e.publicSymbols[methodName].overloadTable[prevArgCount] = &publicSymbol{
+		e.publicSymbols[methodName].overloadTable[*prevArgCount] = &publicSymbol{
 			argCount: prevArgCount,
 			fn:       prevFunc,
 		}
 	}
 }
 
-func (e *engine) exposePublicSymbol(name string, value publicSymbolFn, numArguments int32) error {
+func (e *engine) exposePublicSymbol(name string, value publicSymbolFn, numArguments *int32) error {
 	_, ok := e.publicSymbols[name]
 	if ok {
-		_, ok = e.publicSymbols[name].overloadTable[numArguments]
+		if numArguments == nil {
+			return fmt.Errorf("cannot register public name '%s' twice", name)
+		}
+
+		_, ok = e.publicSymbols[name].overloadTable[*numArguments]
 		if ok {
 			return fmt.Errorf("cannot register public name '%s' twice", name)
 		}
@@ -238,29 +239,32 @@ func (e *engine) exposePublicSymbol(name string, value publicSymbolFn, numArgume
 		//}
 
 		// Add the new function into the overload table.
-		e.publicSymbols[name].overloadTable[numArguments] = &publicSymbol{
+		e.publicSymbols[name].overloadTable[*numArguments] = &publicSymbol{
 			argCount: numArguments,
 			fn:       value,
 		}
 	} else {
 		e.publicSymbols[name] = &publicSymbol{
-			argCount: numArguments,
-			fn:       value,
+			fn: value,
+		}
+
+		if numArguments != nil {
+			e.publicSymbols[name].argCount = numArguments
 		}
 	}
 
 	return nil
 }
 
-func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, this any, arguments ...any) (any, error), numArguments int32) error {
+func (e *engine) replacePublicSymbol(name string, value func(ctx context.Context, this any, arguments ...any) (any, error), numArguments *int32) error {
 	_, ok := e.publicSymbols[name]
 	if !ok {
 		return fmt.Errorf("tried to replace a nonexistant public symbol %s", name)
 	}
 
 	// If there's an overload table for this symbol, replace the symbol in the overload table instead.
-	if e.publicSymbols[name].overloadTable != nil && numArguments > 0 {
-		e.publicSymbols[name].overloadTable[numArguments] = &publicSymbol{
+	if e.publicSymbols[name].overloadTable != nil && numArguments != nil {
+		e.publicSymbols[name].overloadTable[*numArguments] = &publicSymbol{
 			argCount: numArguments,
 			fn:       value,
 		}
@@ -440,10 +444,13 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 			}
 			for i := startArg; i < len(argTypes); i++ {
 				if argTypes[i].HasDestructorFunction() {
-					err = argTypes[i].DestructorFunction(ctx, e.mod, api.DecodeU32(callArgs[i]))
+					destructorsRef := *destructors
+					destructor, err := argTypes[i].DestructorFunction(ctx, e.mod, api.DecodeU32(callArgs[i]))
 					if err != nil {
 						return nil, err
 					}
+					destructorsRef = append(destructorsRef, destructor)
+					*destructors = destructorsRef
 				}
 			}
 		}
@@ -451,7 +458,7 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 		if returns {
 			returnVal, err := retType.FromWireType(ctx, e.mod, res[0])
 			if err != nil {
-				return nil, fmt.Errorf("could not get wire type of return value (%s): %w", retType.Name(), err)
+				return nil, fmt.Errorf("could not get wire type of return value (%s) on %T: %w", retType.Name(), retType, err)
 			}
 
 			return returnVal, nil
@@ -462,13 +469,30 @@ func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredTyp
 }
 
 type destructorFunc struct {
-	function string
-	args     []uint64
+	function    string
+	apiFunction api.Function
+	args        []uint64
+}
+
+func (df *destructorFunc) run(ctx context.Context, mod api.Module) error {
+	if df.apiFunction != nil {
+		_, err := df.apiFunction.Call(ctx, df.args...)
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err := mod.ExportedFunction(df.function).Call(ctx, df.args...)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (e *engine) runDestructors(ctx context.Context, destructors []*destructorFunc) error {
 	for i := range destructors {
-		_, err := e.mod.ExportedFunction(destructors[i].function).Call(ctx, destructors[i].args...)
+		err := destructors[i].run(ctx, e.mod)
 		if err != nil {
 			return err
 		}
@@ -624,4 +648,41 @@ func (e *engine) makeLegalFunctionName(name string) string {
 	}
 
 	return name
+}
+
+func (e *engine) upcastPointer(ctx context.Context, ptr uint32, ptrClass *classType, desiredClass *classType) (uint32, error) {
+	for ptrClass != desiredClass {
+		if ptrClass.upcast == nil {
+			return 0, fmt.Errorf("expected null or instance of %s, got an instance of %s", desiredClass.name, ptrClass.name)
+		}
+		res, err := ptrClass.upcast.Call(ctx, api.EncodeU32(ptr))
+		if err != nil {
+			return 0, err
+		}
+
+		ptr = api.DecodeU32(res[0])
+		ptrClass = ptrClass.baseClass
+	}
+
+	return ptr, nil
+}
+
+func (e *engine) validateThis(ctx context.Context, this any, classType *registeredPointerType, humanName string) (uint32, error) {
+	if this == nil {
+		return 0, fmt.Errorf("%s called with invalid \"this\"", humanName)
+	}
+
+	based, ok := this.(IEmvalClassBase)
+	if !ok {
+		return 0, fmt.Errorf("given value of type %T is not based on IEmvalClassBase", this)
+	}
+
+	if based.Ptr() == 0 {
+		return 0, fmt.Errorf("cannot call emscripten binding method %s on deleted object", humanName)
+	}
+
+	// @todo: check if based.ptrType.registeredClass is or extends classType.registeredClass
+
+	// todo: kill this
+	return e.upcastPointer(ctx, based.Ptr(), based.PtrType().registeredClass, classType.registeredClass)
 }
