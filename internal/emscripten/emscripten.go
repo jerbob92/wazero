@@ -94,6 +94,10 @@ type InvokeFunc struct {
 func (v *InvokeFunc) Call(ctx context.Context, mod api.Module, stack []uint64) {
 	mod = resolveMainModule(ctx, mod)
 	ctx = context.WithValue(ctx, invokeFuncParentModuleKey{}, mod)
+	if ctx.Value(exceptionsStateKey{}) == nil {
+		ctx = context.WithValue(ctx, exceptionsStateKey{}, &exceptionsState{})
+	}
+
 	m := mod.(*wasm.ModuleInstance)
 
 	// Lookup the type of the function we are calling indirectly.

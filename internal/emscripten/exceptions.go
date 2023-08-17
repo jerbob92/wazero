@@ -11,6 +11,64 @@ import (
 	"github.com/tetratelabs/wazero/internal/wasm"
 )
 
+type exceptionsStateKey struct{}
+
+type exceptionsState struct {
+	uncaughtCount int32
+	last          *cppException
+	caught        []*exceptionInfo
+}
+
+func (es *exceptionsState) Pop() *exceptionInfo {
+	if es.caught == nil || len(es.caught) == 0 {
+		return nil
+	}
+	topException := es.caught[len(es.caught)-1]
+	es.caught = es.caught[:len(es.caught)-1]
+	return topException
+}
+
+func (es *exceptionsState) Add(e *exceptionInfo) {
+	if es.caught == nil {
+		es.caught = []*exceptionInfo{}
+	}
+	es.caught = append(es.caught, e)
+}
+
+func (es *exceptionsState) Top() *exceptionInfo {
+	if es.caught == nil || len(es.caught) == 0 {
+		return nil
+	}
+
+	return es.caught[len(es.caught)-1]
+}
+
+func getExceptionsState(ctx context.Context) *exceptionsState {
+	state := ctx.Value(exceptionsStateKey{})
+	if state == nil {
+		panic("could not find exceptions state")
+	}
+	return state.(*exceptionsState)
+}
+
+type cppException struct {
+	excPtr  int32
+	name    string
+	message string
+}
+
+func (ce *cppException) Error() string {
+	if ce.message == "" {
+		return ce.name
+	}
+	return fmt.Sprintf("%s: %s", ce.name, ce.message)
+}
+
+func (ce *cppException) Is(target error) bool {
+	_, ok := target.(*cppException)
+	return ok
+}
+
 type cStruct struct {
 	size    int32
 	offsets map[string]int32
@@ -34,24 +92,6 @@ var cStructs = map[string]cStruct{
 			"adjustedPtr":         16,
 		},
 	},
-}
-
-type cppException struct {
-	excPtr  int32
-	name    string
-	message string
-}
-
-func (ce *cppException) Error() string {
-	if ce.message == "" {
-		return ce.name
-	}
-	return fmt.Sprintf("%s: %s", ce.name, ce.message)
-}
-
-func (ce *cppException) Is(target error) bool {
-	_, ok := target.(*cppException)
-	return ok
 }
 
 func readCString(mod api.Module, addr uint32) (string, error) {
@@ -154,8 +194,8 @@ func newCppException(ctx context.Context, mod api.Module, excPtr int32) (*cppExc
 	return exception, nil
 }
 
-func newExceptionInfo(excPtr int32) exceptionInfo {
-	return exceptionInfo{
+func newExceptionInfo(excPtr int32) *exceptionInfo {
+	return &exceptionInfo{
 		excPtr: excPtr,
 		ptr:    excPtr - cStructs["__cxa_exception"].size,
 	}
@@ -243,9 +283,6 @@ func (ei *exceptionInfo) GetExceptionPtr(ctx context.Context, mod api.Module) (i
 	return ei.excPtr, nil
 }
 
-var uncaughtExceptionCount = int32(0)
-var exceptionLast *cppException
-
 const FunctionCxaThrow = "__cxa_throw"
 
 var CxaThrow = &wasm.HostFunc{
@@ -255,6 +292,7 @@ var CxaThrow = &wasm.HostFunc{
 	ParamNames: []string{"ptr", "type", "destructor"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, params []uint64) {
 		mod = resolveMainModule(ctx, mod)
+		cxaState := getExceptionsState(ctx)
 		ptr := api.DecodeI32(params[0])
 		exceptionType := api.DecodeI32(params[1])
 		destructor := api.DecodeI32(params[2])
@@ -268,9 +306,9 @@ var CxaThrow = &wasm.HostFunc{
 			panic(err)
 		}
 
-		exceptionLast = createdCppException
-		uncaughtExceptionCount++
-		panic(exceptionLast)
+		cxaState.last = createdCppException
+		cxaState.uncaughtCount++
+		panic(cxaState.last)
 	})},
 }
 
@@ -314,13 +352,14 @@ func (v *FindMatchingCatchFunc) Call(ctx context.Context, mod api.Module, stack 
 		stack[0] = 0
 	}
 
-	if exceptionLast == nil {
+	cxaState := getExceptionsState(ctx)
+	if cxaState.last == nil {
 		// just pass through the null ptr
 		passThroughNull()
 		return
 	}
 
-	thrown := exceptionLast.excPtr
+	thrown := cxaState.last.excPtr
 
 	info := newExceptionInfo(thrown)
 	info.SetAdjustedPtr(mod, thrown)
@@ -389,8 +428,6 @@ var LlvmEhTypeidFor = &wasm.HostFunc{
 
 const FunctionCxaBeginCatch = "__cxa_begin_catch"
 
-var exceptionCaught = []exceptionInfo{}
-
 var CxaBeginCatch = &wasm.HostFunc{
 	ExportName:  FunctionCxaBeginCatch,
 	Name:        FunctionCxaBeginCatch,
@@ -400,13 +437,14 @@ var CxaBeginCatch = &wasm.HostFunc{
 	ResultNames: []string{"exception_ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
 		mod = resolveMainModule(ctx, mod)
+		cxaState := getExceptionsState(ctx)
 		info := newExceptionInfo(api.DecodeI32(stack[0]))
 		if info.GetCaught(mod) == 0 {
 			info.SetCaught(mod, 1)
-			uncaughtExceptionCount--
+			cxaState.uncaughtCount--
 		}
 		info.SetRethrown(mod, 0)
-		exceptionCaught = append(exceptionCaught, info)
+		cxaState.Add(info)
 
 		_, err := mod.ExportedFunction("__cxa_increment_exception_refcount").Call(ctx, api.EncodeI32(info.excPtr))
 		if err != nil {
@@ -433,16 +471,17 @@ var CxaEndCatch = &wasm.HostFunc{
 			panic(err)
 		}
 
+		cxaState := getExceptionsState(ctx)
+
 		// Call destructor if one is registered then clear it.
-		info := exceptionCaught[len(exceptionCaught)-1]
-		exceptionCaught = exceptionCaught[:len(exceptionCaught)-1]
+		info := cxaState.Pop()
 
 		_, err = mod.ExportedFunction("__cxa_decrement_exception_refcount").Call(ctx, api.EncodeI32(info.excPtr))
 		if err != nil {
 			panic(err)
 		}
 
-		exceptionLast = nil
+		cxaState.last = nil
 	})},
 }
 
@@ -454,15 +493,16 @@ var ResumeException = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ParamNames: []string{"ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		if exceptionLast == nil {
+		cxaState := getExceptionsState(ctx)
+		if cxaState.last == nil {
 			mod = resolveMainModule(ctx, mod)
 			exception, err := newCppException(ctx, mod, api.DecodeI32(stack[0]))
 			if err != nil {
 				panic(err)
 			}
-			exceptionLast = exception
+			cxaState.last = exception
 		}
-		panic(exceptionLast)
+		panic(cxaState.last)
 	})},
 }
 
@@ -472,29 +512,29 @@ var CxaRethrow = &wasm.HostFunc{
 	ExportName: FunctionCxaRethrow,
 	Name:       FunctionCxaRethrow,
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		if len(exceptionCaught) == 0 {
+		cxaState := getExceptionsState(ctx)
+		if len(cxaState.caught) == 0 {
 			panic("no exception to throw")
 		}
 		mod = resolveMainModule(ctx, mod)
 
 		// Get the last entry and pop it from the list.
-		info := exceptionCaught[len(exceptionCaught)-1]
-		exceptionCaught = exceptionCaught[:len(exceptionCaught)-1]
+		info := cxaState.Pop()
 
 		ptr := info.excPtr
 		if info.GetRethrown(mod) == 0 {
 			// Only pop if the corresponding push was through rethrow_primary_exception
-			exceptionCaught = append(exceptionCaught, info)
+			cxaState.Add(info)
 			info.SetRethrown(mod, 1)
 			info.SetCaught(mod, 0)
-			uncaughtExceptionCount++
+			cxaState.uncaughtCount++
 		}
 		exception, err := newCppException(ctx, mod, ptr)
 		if err != nil {
 			panic(err)
 		}
-		exceptionLast = exception
-		panic(exceptionLast)
+		cxaState.last = exception
+		panic(cxaState.last)
 	})},
 }
 
@@ -506,7 +546,8 @@ var CxaUncaughtExceptions = &wasm.HostFunc{
 	ResultTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ResultNames: []string{"count"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		stack[0] = api.EncodeI32(uncaughtExceptionCount)
+		cxaState := getExceptionsState(ctx)
+		stack[0] = api.EncodeI32(cxaState.uncaughtCount)
 	})},
 }
 
@@ -550,12 +591,13 @@ var CxaCurrentPrimaryException = &wasm.HostFunc{
 	ResultTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ResultNames: []string{"ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		if len(exceptionCaught) == 0 {
+		cxaState := getExceptionsState(ctx)
+		if len(cxaState.caught) == 0 {
 			stack[0] = 0
 			return
 		}
 		mod = resolveMainModule(ctx, mod)
-		info := exceptionCaught[len(exceptionCaught)-1]
+		info := cxaState.Top()
 		_, err := mod.ExportedFunction("__cxa_increment_exception_refcount").Call(ctx, api.EncodeI32(info.excPtr))
 		if err != nil {
 			panic(err)
@@ -578,7 +620,8 @@ var CxaRethrowPrimaryException = &wasm.HostFunc{
 			return
 		}
 		info := newExceptionInfo(api.DecodeI32(stack[0]))
-		exceptionCaught = append(exceptionCaught, info)
+		cxaState := getExceptionsState(ctx)
+		cxaState.Add(info)
 		info.SetRethrown(mod, 1)
 
 		_, err := mod.ExportedFunction("__cxa_rethrow").Call(ctx, api.EncodeI32(info.excPtr))
