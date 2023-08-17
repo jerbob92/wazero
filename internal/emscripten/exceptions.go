@@ -11,6 +11,31 @@ import (
 	"github.com/tetratelabs/wazero/internal/wasm"
 )
 
+type cStruct struct {
+	size    int32
+	offsets map[string]int32
+}
+
+// @todo: These are the struct field sizes of __cxa_exception, if they change
+// our code will break. If you compile with MEMORY64 (unsupported by Wazero)
+// this will also break, since the size and offsets will be off. Emscripten
+// determines this information at compile time and then injects it into the JS
+// there is no way for us to know this information without hardcoding it at
+// this moment.
+var cStructs = map[string]cStruct{
+	"__cxa_exception": {
+		size: 24,
+		offsets: map[string]int32{
+			"referenceCount":      0,
+			"exceptionDestructor": 8,
+			"exceptionType":       4,
+			"caught":              12,
+			"rethrown":            13,
+			"adjustedPtr":         16,
+		},
+	},
+}
+
 type cppException struct {
 	excPtr  int32
 	name    string
@@ -132,7 +157,7 @@ func newCppException(ctx context.Context, mod api.Module, excPtr int32) (*cppExc
 func newExceptionInfo(excPtr int32) exceptionInfo {
 	return exceptionInfo{
 		excPtr: excPtr,
-		ptr:    excPtr - 24,
+		ptr:    excPtr - cStructs["__cxa_exception"].size,
 	}
 }
 
@@ -142,38 +167,38 @@ type exceptionInfo struct {
 }
 
 func (ei *exceptionInfo) SetType(mod api.Module, exceptionType int32) {
-	mod.Memory().WriteUint32Le(uint32(ei.ptr+4), uint32(exceptionType))
+	mod.Memory().WriteUint32Le(uint32(ei.ptr+cStructs["__cxa_exception"].offsets["exceptionType"]), uint32(exceptionType))
 }
 
 func (ei *exceptionInfo) GetType(mod api.Module) int32 {
-	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + 4))
+	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + cStructs["__cxa_exception"].offsets["exceptionType"]))
 	return int32(val)
 }
 
 func (ei *exceptionInfo) SetDestructor(mod api.Module, destructor int32) {
-	mod.Memory().WriteUint32Le(uint32(ei.ptr+8), uint32(destructor))
+	mod.Memory().WriteUint32Le(uint32(ei.ptr+cStructs["__cxa_exception"].offsets["exceptionDestructor"]), uint32(destructor))
 }
 
 func (ei *exceptionInfo) GetDestructor(mod api.Module) int32 {
-	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + 8))
+	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + cStructs["__cxa_exception"].offsets["exceptionDestructor"]))
 	return int32(val)
 }
 
 func (ei *exceptionInfo) SetCaught(mod api.Module, caught int8) {
-	mod.Memory().WriteByte(uint32(ei.ptr+12), byte(caught))
+	mod.Memory().WriteByte(uint32(ei.ptr+cStructs["__cxa_exception"].offsets["caught"]), byte(caught))
 }
 
 func (ei *exceptionInfo) GetCaught(mod api.Module) int8 {
-	val, _ := mod.Memory().ReadByte(uint32(ei.ptr + 12))
+	val, _ := mod.Memory().ReadByte(uint32(ei.ptr + cStructs["__cxa_exception"].offsets["caught"]))
 	return int8(val)
 }
 
 func (ei *exceptionInfo) SetRethrown(mod api.Module, rethrown int8) {
-	mod.Memory().WriteByte(uint32(ei.ptr+13), byte(rethrown))
+	mod.Memory().WriteByte(uint32(ei.ptr+cStructs["__cxa_exception"].offsets["rethrown"]), byte(rethrown))
 }
 
 func (ei *exceptionInfo) GetRethrown(mod api.Module) int8 {
-	val, _ := mod.Memory().ReadByte(uint32(ei.ptr + 13))
+	val, _ := mod.Memory().ReadByte(uint32(ei.ptr + cStructs["__cxa_exception"].offsets["rethrown"]))
 	return int8(val)
 }
 
@@ -185,11 +210,11 @@ func (ei *exceptionInfo) Init(mod api.Module, exceptionType, destructor int32) {
 }
 
 func (ei *exceptionInfo) SetAdjustedPtr(mod api.Module, adjustedPtr int32) {
-	mod.Memory().WriteUint32Le(uint32(ei.ptr+16), uint32(adjustedPtr))
+	mod.Memory().WriteUint32Le(uint32(ei.ptr+cStructs["__cxa_exception"].offsets["adjustedPtr"]), uint32(adjustedPtr))
 }
 
 func (ei *exceptionInfo) GetAdjustedPtr(mod api.Module) int32 {
-	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + 16))
+	val, _ := mod.Memory().ReadUint32Le(uint32(ei.ptr + cStructs["__cxa_exception"].offsets["adjustedPtr"]))
 	return int32(val)
 }
 
@@ -319,14 +344,14 @@ func (v *FindMatchingCatchFunc) Call(ctx context.Context, mod api.Module, stack 
 			break
 		}
 
-		adjustedPtrAddr := info.ptr + 16
+		adjustedPtrAddr := info.ptr + cStructs["__cxa_exception"].offsets["adjustedPtr"]
 		canCatchRes, err := mod.ExportedFunction("__cxa_can_catch").Call(ctx, api.EncodeI32(caughtType), api.EncodeI32(thrownType), api.EncodeI32(adjustedPtrAddr))
 		if err != nil {
 			panic(err)
 		}
 
 		if canCatchRes[0] > 0 {
-			_, err := mod.ExportedFunction("setTempRet0").Call(ctx, api.EncodeI32(caughtType))
+			_, err = mod.ExportedFunction("setTempRet0").Call(ctx, api.EncodeI32(caughtType))
 			if err != nil {
 				panic(err)
 			}
@@ -513,7 +538,7 @@ var CxaCallUnexpected = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ParamNames: []string{"exception"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		panic(errors.New("Unexpected exception thrown, this is not properly supported - aborting"))
+		panic(fmt.Errorf("unexpected exception %d thrown, this is not properly supported - aborting", api.DecodeI32(stack[0])))
 	})},
 }
 
