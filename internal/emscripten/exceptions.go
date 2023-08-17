@@ -559,19 +559,3 @@ var CxaRethrowPrimaryException = &wasm.HostFunc{
 		}
 	})},
 }
-
-func resolveMainModule(ctx context.Context, mod api.Module) api.Module {
-	if mod.Name() == "" {
-		return mod
-	}
-
-	parentMod := ctx.Value(invokeFuncParentModuleKey{})
-	if parentMod != nil {
-		typedParentMod, ok := parentMod.(api.Module)
-		if ok {
-			return typedParentMod
-		}
-	}
-
-	panic(fmt.Errorf("resolveMainModule, need the main module for a host function but my module is %s and there is no parent module in the context", mod.Name()))
-}

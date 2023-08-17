@@ -92,6 +92,7 @@ type InvokeFunc struct {
 // Call implements api.GoModuleFunction by special casing dynamic calls needed
 // for emscripten `invoke_` functions such as `invoke_ii` or `invoke_v`.
 func (v *InvokeFunc) Call(ctx context.Context, mod api.Module, stack []uint64) {
+	mod = resolveMainModule(ctx, mod)
 	ctx = context.WithValue(ctx, invokeFuncParentModuleKey{}, mod)
 	m := mod.(*wasm.ModuleInstance)
 
@@ -181,4 +182,23 @@ func callOrPanic(ctx context.Context, m api.Module, name string, stack []uint64)
 	} else {
 		panic(fmt.Sprintf("%s not exported", name))
 	}
+}
+
+func resolveMainModule(ctx context.Context, mod api.Module) api.Module {
+	if mod.Name() == "" {
+		return mod
+	}
+
+	parentMod := ctx.Value(invokeFuncParentModuleKey{})
+	if parentMod != nil {
+		typedParentMod, ok := parentMod.(api.Module)
+		if ok {
+			if typedParentMod.Name() != "" {
+				panic(fmt.Errorf("the parent module provided in the context is not the main module but a module named \"%s\"", typedParentMod.Name()))
+			}
+			return typedParentMod
+		}
+	}
+
+	panic(fmt.Errorf("resolveMainModule needs the main module for a host function but my module is \"%s\" and there is no parent module in the context", mod.Name()))
 }
