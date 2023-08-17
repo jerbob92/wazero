@@ -70,10 +70,12 @@ type publicSymbol struct {
 	argCount      int32
 	overloadTable map[int32]*publicSymbol
 	fn            publicSymbolFn
+	className     string
 }
 
-// @todo: implement classes.
-type classType struct {
+type registeredPointer struct {
+	pointerType      *registeredPointerType
+	constPointerType *registeredPointerType
 }
 
 type engine struct {
@@ -84,6 +86,8 @@ type engine struct {
 	awaitingDependencies map[int32][]*awaitingDependency
 	registeredConstants  map[string]*registeredConstant
 	registeredEnums      map[string]*enumType
+	registeredPointers   map[int32]*registeredPointer
+	registeredClasses    map[string]*classType
 	emvalEngine          *emvalEngine
 }
 

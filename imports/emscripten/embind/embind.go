@@ -25,3 +25,7 @@ type EmvalConstructor interface {
 type EmvalFunctionMapper interface {
 	embind_internal.EmvalFunctionMapper
 }
+
+type EmvalClassBase struct {
+	embind_internal.EmvalClassBase
+}

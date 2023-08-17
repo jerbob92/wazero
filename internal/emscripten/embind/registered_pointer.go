@@ -8,6 +8,19 @@ import (
 
 type registeredPointerType struct {
 	baseType
+	registeredClass *classType
+	constructors    map[int32]publicSymbolFn
+	isReference     bool
+	isConst         bool
+
+	// smart pointer properties
+	isSmartPointer bool
+	pointeeType    any
+	sharingPolicy  any
+	rawGetPointee  any
+	rawConstructor any
+	rawShare       any
+	rawDestructor  any
 }
 
 func (rpt *registeredPointerType) FromWireType(ctx context.Context, mod api.Module, value uint64) (any, error) {

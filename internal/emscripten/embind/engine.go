@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/internal/wasm"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -90,6 +91,39 @@ func (e *engine) RegisterSymbol(name string, symbol any) error {
 	return nil
 }
 
+func (e *engine) RegisterClass(name string, goStruct any) error {
+	if _, ok := goStruct.(EmvalClassBase); !ok {
+		return fmt.Errorf("could not register class %s with type %T, it does not embed embind.EmvalClassBase", name, goStruct)
+	}
+
+	existingClass, ok := e.registeredClasses[name]
+	if ok {
+		if existingClass.hasGoStruct {
+			return fmt.Errorf("could not register class %s, already registered as type %T", name, existingClass.goStruct)
+		}
+	} else {
+		e.registeredClasses[name] = &classType{
+			baseType: baseType{
+				name:           name,
+				argPackAdvance: 8,
+			},
+			pureVirtualFunctions: []string{},
+			methods:              map[string]*publicSymbol{},
+		}
+	}
+
+	e.registeredClasses[name].goStruct = goStruct
+	e.registeredClasses[name].hasGoStruct = true
+
+	err := e.registeredClasses[name].validate()
+	if err != nil {
+		e.registeredClasses[name].goStruct = nil
+		e.registeredClasses[name].hasGoStruct = false
+	}
+
+	return err
+}
+
 func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32) (api.Function, error) {
 	// Not used in Wazero.
 	//signature, err := readCString(mod, uint32(signaturePtr))
@@ -160,7 +194,7 @@ func (e *engine) registerType(rawType int32, registeredInstance registeredType, 
 	return nil
 }
 
-func (e *engine) ensureOverloadTable(methodName, humanName string) {
+func (e *engine) ensureOverloadTable(registry map[string]*publicSymbol, methodName, humanName string) {
 	if e.publicSymbols[methodName].overloadTable == nil {
 		prevFunc := e.publicSymbols[methodName].fn
 		prevArgCount := e.publicSymbols[methodName].argCount
@@ -196,7 +230,7 @@ func (e *engine) exposePublicSymbol(name string, value publicSymbolFn, numArgume
 			return fmt.Errorf("cannot register public name '%s' twice", name)
 		}
 
-		e.ensureOverloadTable(name, name)
+		e.ensureOverloadTable(e.publicSymbols, name, name)
 
 		// What does this actually do? Looks like a bug in Emscripten JS.
 		//if (Module.hasOwnProperty(numArguments)) {
@@ -310,7 +344,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 	return nil
 }
 
-func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredType, classType *classType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) publicSymbolFn {
+func (e *engine) craftInvokerFunction(humanName string, argTypes []registeredType, classType *registeredPointerType, cppInvokerFunc api.Function, cppTargetFunc int32, isAsync bool) publicSymbolFn {
 	// humanName: a human-readable string name for the function to be generated.
 	// argTypes: An array that contains the embind type objects for all types in the function signature.
 	//    argTypes[0] is the type object for the function return value.
@@ -575,4 +609,19 @@ func (e *engine) requireRegisteredType(ctx context.Context, rawType int32, human
 	}
 
 	return registeredType, nil
+}
+
+var illegalCharsRegex = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+func (e *engine) makeLegalFunctionName(name string) string {
+	// Replace illegal chars with underscore. In JS this is a dollar sign, but
+	// that is not valid in Go.
+	name = illegalCharsRegex.ReplaceAllString(name, `_`)
+
+	// Prepend with underscore if it starts with a number.
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "_" + name
+	}
+
+	return name
 }

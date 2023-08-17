@@ -1042,54 +1042,51 @@ var EmvalRegisterClass = &wasm.HostFunc{
 		rawPointerType := api.DecodeI32(stack[1])
 		rawConstPointerType := api.DecodeI32(stack[2])
 		baseClassRawType := api.DecodeI32(stack[3])
+		getActualTypeSignature := api.DecodeI32(stack[4])
+		getActualType := api.DecodeI32(stack[5])
+		upcastSignature := api.DecodeI32(stack[6])
+		upcast := api.DecodeI32(stack[7])
+		downcastSignature := api.DecodeI32(stack[8])
+		downcast := api.DecodeI32(stack[9])
 		namePtr := api.DecodeI32(stack[10])
+		destructorSignature := api.DecodeI32(stack[11])
+		rawDestructor := api.DecodeI32(stack[12])
 
 		name, err := engine.readCString(uint32(namePtr))
 		if err != nil {
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
-		/*
-			getActualTypeSignature := api.DecodeI32(stack[4])
-			getActualType := api.DecodeI32(stack[5])
-			upcastSignature := api.DecodeI32(stack[6])
-			upcast := api.DecodeI32(stack[7])
-			downcastSignature := api.DecodeI32(stack[8])
-			downcast := api.DecodeI32(stack[9])
-			destructorSignature := api.DecodeI32(stack[11])
-			rawDestructor := api.DecodeI32(stack[12])
 
+		getActualTypeFunc, err := engine.newInvokeFunc(getActualTypeSignature, getActualType)
+		if err != nil {
+			panic(fmt.Errorf("could not read getActualType: %w", err))
+		}
 
-		*/
-		/*
-			getActualTypeFunc, err := engine.newInvokeFunc(getActualTypeSignature, getActualType)
+		var upcastFunc api.Function
+		if upcast > 0 {
+			upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast)
 			if err != nil {
-				panic(fmt.Errorf("could not read getActualType: %w", err))
+				panic(fmt.Errorf("could not read upcast: %w", err))
 			}
+		}
 
-			var upcastFunc api.Function
-			if upcast > 0 {
-				upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast)
-				if err != nil {
-					panic(fmt.Errorf("could not read upcast: %w", err))
-				}
-			}
-
-			var downcastFunc api.Function
-			if downcast > 0 {
-				downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast)
-				if err != nil {
-					panic(fmt.Errorf("could not read downcast: %w", err))
-				}
-			}
-
-			rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		var downcastFunc api.Function
+		if downcast > 0 {
+			downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast)
 			if err != nil {
-				panic(fmt.Errorf("could not read rawDestructor: %w", err))
+				panic(fmt.Errorf("could not read downcast: %w", err))
 			}
-		*/
+		}
+
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		if err != nil {
+			panic(fmt.Errorf("could not read rawDestructor: %w", err))
+		}
+
+		legalFunctionName := engine.makeLegalFunctionName(name)
 
 		// Set a default callback that errors out when not all types are resolved.
-		err = engine.exposePublicSymbol(name, func(ctx context.Context, this any, arguments ...any) (any, error) {
+		err = engine.exposePublicSymbol(legalFunctionName, func(ctx context.Context, this any, arguments ...any) (any, error) {
 			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), []int32{baseClassRawType})
 		}, 0)
 		if err != nil {
@@ -1101,89 +1098,95 @@ var EmvalRegisterClass = &wasm.HostFunc{
 			dependentTypes = append(dependentTypes, baseClassRawType)
 		}
 
-		err = engine.whenDependentTypesAreResolved([]int32{rawType, rawPointerType, rawConstPointerType}, dependentTypes, func(argTypes []registeredType) ([]registeredType, error) {
-			//base := argTypes[0]
+		err = engine.whenDependentTypesAreResolved([]int32{rawType, rawPointerType, rawConstPointerType}, dependentTypes, func(resolvedTypes []registeredType) ([]registeredType, error) {
+			existingClass, ok := engine.registeredClasses[name]
+			if ok {
+				if existingClass.baseType.rawType != 0 {
+					return nil, fmt.Errorf("could not register class %s, already registered as raw type %d", name, existingClass.baseType.rawType)
+				}
+			} else {
+				engine.registeredClasses[name] = &classType{
+					baseType: baseType{
+						name:           name,
+						argPackAdvance: 8,
+					},
+					pureVirtualFunctions: []string{},
+					methods:              map[string]*publicSymbol{},
+				}
+			}
 
-			/*
-			   var baseClass;
-			   var basePrototype;
-			   if (baseClassRawType) {
-			     baseClass = base.registeredClass;
-			     basePrototype = baseClass.instancePrototype;
-			   } else {
-			     basePrototype = ClassHandle.prototype;
-			   }
+			engine.registeredClasses[name].baseType.rawType = rawType
+			engine.registeredClasses[name].rawDestructor = rawDestructorFunc
+			engine.registeredClasses[name].getActualType = getActualTypeFunc
+			engine.registeredClasses[name].upcast = upcastFunc
+			engine.registeredClasses[name].downcast = downcastFunc
 
-			   var constructor = createNamedFunction(legalFunctionName, function() {
-			     if (Object.getPrototypeOf(this) !== instancePrototype) {
-			       throw new BindingError("Use 'new' to construct " + name);
-			     }
-			     if (undefined === registeredClass.constructor_body) {
-			       throw new BindingError(name + " has no accessible constructor");
-			     }
-			     var body = registeredClass.constructor_body[arguments.length];
-			     if (undefined === body) {
-			       throw new BindingError(`Tried to invoke ctor of ${name} with invalid number of parameters (${arguments.length}) - expected (${Object.keys(registeredClass.constructor_body).toString()}) parameters instead!`);
-			     }
-			     return body.apply(this, arguments);
-			   });
+			if baseClassRawType > 0 {
+				engine.registeredClasses[name].baseClass = resolvedTypes[0].(*classType)
+				if engine.registeredClasses[name].baseClass.derivedClasses == nil {
+					engine.registeredClasses[name].baseClass.derivedClasses = []*classType{engine.registeredClasses[name]}
+				} else {
+					engine.registeredClasses[name].baseClass.derivedClasses = append(engine.registeredClasses[name].baseClass.derivedClasses, engine.registeredClasses[name])
+				}
+			}
 
-			   var instancePrototype = Object.create(basePrototype, {
-			     constructor: { value: constructor },
-			   });
+			referenceConverter := &registeredPointerType{
+				baseType: baseType{
+					argPackAdvance: 8,
+					name:           name,
+				},
+				registeredClass: engine.registeredClasses[name],
+				isReference:     true,
+				isConst:         false,
+				isSmartPointer:  false,
+			}
 
-			   constructor.prototype = instancePrototype;
+			pointerConverter := &registeredPointerType{
+				baseType: baseType{
+					argPackAdvance: 8,
+					name:           name + "*",
+				},
+				registeredClass: engine.registeredClasses[name],
+				isReference:     false,
+				isConst:         false,
+				isSmartPointer:  false,
+			}
 
-			   var registeredClass = new RegisteredClass(name,
-			                                             constructor,
-			                                             instancePrototype,
-			                                             rawDestructor,
-			                                             baseClass,
-			                                             getActualType,
-			                                             upcast,
-			                                             downcast);
+			constPointerConverter := &registeredPointerType{
+				baseType: baseType{
+					argPackAdvance: 8,
+					name:           name + " const*",
+				},
+				registeredClass: engine.registeredClasses[name],
+				isReference:     false,
+				isConst:         true,
+				isSmartPointer:  false,
+			}
 
-			   if (registeredClass.baseClass) {
-			     // Keep track of class hierarchy. Used to allow sub-classes to inherit class functions.
-			     if (registeredClass.baseClass.__derivedClasses === undefined) {
-			       registeredClass.baseClass.__derivedClasses = [];
-			     }
+			engine.registeredPointers[rawType] = &registeredPointer{
+				pointerType:      pointerConverter,
+				constPointerType: constPointerConverter,
+			}
 
-			     registeredClass.baseClass.__derivedClasses.push(registeredClass);
-			   }
+			err := engine.registeredClasses[name].validate()
+			if err != nil {
+				return nil, err
+			}
 
-			   var referenceConverter = new RegisteredPointer(name,
-			                                                  registeredClass,
-			                                                  true,
-			                                                  false,
-			                                                  false);
+			err = engine.exposePublicSymbol(legalFunctionName, func(ctx context.Context, this any, arguments ...any) (any, error) {
+				// @todo: implement me.
+				return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unimplemented constructor @TODO", name), []int32{baseClassRawType})
+			}, 0)
+			if err != nil {
+				panic(fmt.Errorf("could not replace public symbol: %w", err))
+			}
 
-			   var pointerConverter = new RegisteredPointer(name + '*',
-			                                                registeredClass,
-			                                                false,
-			                                                false,
-			                                                false);
-
-			   var constPointerConverter = new RegisteredPointer(name + ' const*',
-			                                                     registeredClass,
-			                                                     false,
-			                                                     true,
-			                                                     false);
-
-			   registeredPointers[rawType] = {
-			     pointerType: pointerConverter,
-			     constPointerType: constPointerConverter
-			   };
-
-			   replacePublicSymbol(legalFunctionName, constructor);
-
-			   return [referenceConverter, pointerConverter, constPointerConverter];
-			*/
-			return nil, nil
+			return []registeredType{referenceConverter, pointerConverter, constPointerConverter}, nil
 		})
 
-		// @todo: implement me.
-		log.Printf("%s: %s", FunctionEmbindRegisterClass, name)
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
@@ -1195,8 +1198,57 @@ var EmbindRegisterClassConstructor = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"rawClassType", "argCount", "rawArgTypesAddr", "invokerSignature", "invoker", "rawConstructor"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterClassConstructor)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawClassType := api.DecodeI32(stack[0])
+		argCount := api.DecodeI32(stack[1])
+		rawArgTypesAddr := api.DecodeI32(stack[2])
+		invokerSignature := api.DecodeI32(stack[3])
+		invoker := api.DecodeI32(stack[4])
+		rawConstructor := api.DecodeI32(stack[5])
+
+		rawArgTypes, err := engine.heap32VectorToArray(argCount, rawArgTypesAddr)
+		if err != nil {
+			panic(fmt.Errorf("could not read arg types: %w", err))
+		}
+
+		invokerFunc, err := engine.newInvokeFunc(invokerSignature, invoker)
+		if err != nil {
+			panic(fmt.Errorf("could not create invoke func: %w", err))
+		}
+
+		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(resolvedTypes []registeredType) ([]registeredType, error) {
+			classType := resolvedTypes[0].(*registeredPointerType)
+			humanName := "constructor " + classType.name
+
+			if classType.constructors == nil {
+				classType.constructors = map[int32]publicSymbolFn{}
+			}
+
+			if _, ok := classType.constructors[argCount-1]; ok {
+				return nil, fmt.Errorf("cannot register multiple constructors with identical number of parameters (%d) for class '%s'! Overload resolution is currently only performed using the parameter count, not actual type info", argCount-1, classType.name)
+			}
+
+			classType.constructors[argCount-1] = func(ctx context.Context, this any, arguments ...any) (any, error) {
+				return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", classType.name), rawArgTypes)
+			}
+
+			err := engine.whenDependentTypesAreResolved([]int32{}, rawArgTypes, func(argTypes []registeredType) ([]registeredType, error) {
+				// Insert empty slot for context type (argTypes[1]).
+				newArgtypes := []registeredType{argTypes[0], nil}
+				if len(argTypes) > 1 {
+					newArgtypes = append(newArgtypes, argTypes[1:]...)
+				}
+
+				classType.constructors[argCount-1] = engine.craftInvokerFunction(humanName, newArgtypes, nil, invokerFunc, rawConstructor, false)
+				return []registeredType{}, err
+			})
+
+			return []registeredType{}, err
+		})
+
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
@@ -1218,8 +1270,88 @@ var EmbindRegisterClassFunction = &wasm.HostFunc{
 		"isAsync",
 	},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
-		log.Println(FunctionEmbindRegisterClassFunction)
-		// @todo: implement me.
+		engine := MustGetEngineFromContext(ctx, mod).(*engine)
+		rawClassType := api.DecodeI32(stack[0])
+		methodNamePtr := api.DecodeI32(stack[1])
+		argCount := api.DecodeI32(stack[2])
+		rawArgTypesAddr := api.DecodeI32(stack[3])
+		invokerSignature := api.DecodeI32(stack[4])
+		rawInvoker := api.DecodeI32(stack[5])
+		contextPtr := api.DecodeI32(stack[6])
+		isPureVirtual := api.DecodeI32(stack[7])
+		isAsync := api.DecodeI32(stack[8])
+
+		rawArgTypes, err := engine.heap32VectorToArray(argCount, rawArgTypesAddr)
+		if err != nil {
+			panic(fmt.Errorf("could not read arg types: %w", err))
+		}
+
+		methodName, err := engine.readCString(uint32(methodNamePtr))
+		if err != nil {
+			panic(fmt.Errorf("could not read method name: %w", err))
+		}
+
+		rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker)
+		if err != nil {
+			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+		}
+
+		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(classTypes []registeredType) ([]registeredType, error) {
+			classType := classTypes[0].(*registeredPointerType)
+			humanName := classType.Name() + "." + methodName
+
+			if strings.HasPrefix(methodName, "@@") {
+				methodName = engine.emvalEngine.globals[strings.TrimPrefix(methodName, "@@")].(string)
+			}
+
+			if isPureVirtual > 0 {
+				classType.registeredClass.pureVirtualFunctions = append(classType.registeredClass.pureVirtualFunctions, methodName)
+			}
+
+			unboundTypesHandler := &publicSymbol{
+				fn: func(ctx context.Context, this any, arguments ...any) (any, error) {
+					return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", humanName), rawArgTypes)
+				},
+			}
+
+			existingMethod, ok := classType.registeredClass.methods[methodName]
+			if !ok || (existingMethod.overloadTable == nil && existingMethod.className != classType.name && existingMethod.argCount == argCount-2) {
+				// This is the first overload to be registered, OR we are replacing a
+				// function in the base class with a function in the derived class.
+				unboundTypesHandler.argCount = argCount - 2
+				unboundTypesHandler.className = classType.name
+				classType.registeredClass.methods[methodName] = unboundTypesHandler
+			} else {
+				// There was an existing function with the same name registered. Set up
+				// a function overload routing table.
+				engine.ensureOverloadTable(classType.registeredClass.methods, methodName, humanName)
+				classType.registeredClass.methods[methodName].overloadTable[argCount-2] = unboundTypesHandler
+			}
+
+			err = engine.whenDependentTypesAreResolved([]int32{}, rawArgTypes, func(argTypes []registeredType) ([]registeredType, error) {
+				memberFunction := &publicSymbol{
+					fn: engine.craftInvokerFunction(humanName, argTypes, classType, rawInvokerFunc, contextPtr, isAsync > 0),
+				}
+
+				// Replace the initial unbound-handler-stub function with the appropriate member function, now that all types
+				// are resolved. If multiple overloads are registered for this function, the function goes into an overload table.
+				if classType.registeredClass.methods[methodName].overloadTable == nil {
+					// Set argCount in case an overload is registered later
+					memberFunction.argCount = argCount - 2
+					classType.registeredClass.methods[methodName] = memberFunction
+				} else {
+					classType.registeredClass.methods[methodName].overloadTable[argCount-2] = memberFunction
+				}
+
+				return []registeredType{}, nil
+			})
+
+			return []registeredType{}, err
+		})
+
+		if err != nil {
+			panic(fmt.Errorf("could not call whenDependentTypesAreResolved: %w", err))
+		}
 	})},
 }
 
