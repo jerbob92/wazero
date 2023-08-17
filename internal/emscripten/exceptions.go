@@ -356,6 +356,9 @@ var LlvmEhTypeidFor = &wasm.HostFunc{
 		// function _llvm_eh_typeid_for(type) {
 		//   return type;
 		// }
+		// We don't have to return type here because it already re-uses the
+		// stack anyway so leaving this empty is basically the same as the JS
+		// implementation.
 	})},
 }
 
