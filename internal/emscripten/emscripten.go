@@ -83,6 +83,8 @@ func NewInvokeFunc(importName string, params, results []api.ValueType) *wasm.Hos
 	}
 }
 
+type invokeFuncParentModuleKey struct{}
+
 type InvokeFunc struct {
 	*wasm.FunctionType
 }
@@ -90,6 +92,7 @@ type InvokeFunc struct {
 // Call implements api.GoModuleFunction by special casing dynamic calls needed
 // for emscripten `invoke_` functions such as `invoke_ii` or `invoke_v`.
 func (v *InvokeFunc) Call(ctx context.Context, mod api.Module, stack []uint64) {
+	ctx = context.WithValue(ctx, invokeFuncParentModuleKey{}, mod)
 	m := mod.(*wasm.ModuleInstance)
 
 	// Lookup the type of the function we are calling indirectly.

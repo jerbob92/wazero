@@ -229,6 +229,7 @@ var CxaThrow = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32, wasm.ValueTypeI32},
 	ParamNames: []string{"ptr", "type", "destructor"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, params []uint64) {
+		mod = resolveMainModule(ctx, mod)
 		ptr := api.DecodeI32(params[0])
 		exceptionType := api.DecodeI32(params[1])
 		destructor := api.DecodeI32(params[2])
@@ -279,6 +280,7 @@ type FindMatchingCatchFunc struct {
 }
 
 func (v *FindMatchingCatchFunc) Call(ctx context.Context, mod api.Module, stack []uint64) {
+	mod = resolveMainModule(ctx, mod)
 	passThroughNull := func() {
 		_, err := mod.ExportedFunction("setTempRet0").Call(ctx, 0)
 		if err != nil {
@@ -369,6 +371,7 @@ var CxaBeginCatch = &wasm.HostFunc{
 	ResultTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ResultNames: []string{"exception_ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		mod = resolveMainModule(ctx, mod)
 		info := newExceptionInfo(api.DecodeI32(stack[0]))
 		if info.GetCaught(mod) == 0 {
 			info.SetCaught(mod, 1)
@@ -396,6 +399,7 @@ var CxaEndCatch = &wasm.HostFunc{
 	ExportName: FunctionCxaEndCatch,
 	Name:       FunctionCxaEndCatch,
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		mod = resolveMainModule(ctx, mod)
 		_, err := mod.ExportedFunction("setThrew").Call(ctx, 0, 0)
 		if err != nil {
 			panic(err)
@@ -423,6 +427,7 @@ var ResumeException = &wasm.HostFunc{
 	ParamNames: []string{"ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
 		if exceptionLast == nil {
+			mod = resolveMainModule(ctx, mod)
 			exception, err := newCppException(ctx, mod, api.DecodeI32(stack[0]))
 			if err != nil {
 				panic(err)
@@ -442,6 +447,7 @@ var CxaRethrow = &wasm.HostFunc{
 		if len(exceptionCaught) == 0 {
 			panic("no exception to throw")
 		}
+		mod = resolveMainModule(ctx, mod)
 
 		// Get the last entry and pop it from the list.
 		info := exceptionCaught[len(exceptionCaught)-1]
@@ -486,6 +492,7 @@ var CxaGetExceptionPtr = &wasm.HostFunc{
 	ResultTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ResultNames: []string{"exception_ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		mod = resolveMainModule(ctx, mod)
 		info := newExceptionInfo(api.DecodeI32(stack[0]))
 		rtn, err := info.GetExceptionPtr(ctx, mod)
 		if err != nil {
@@ -519,6 +526,7 @@ var CxaCurrentPrimaryException = &wasm.HostFunc{
 			stack[0] = 0
 			return
 		}
+		mod = resolveMainModule(ctx, mod)
 		info := exceptionCaught[len(exceptionCaught)-1]
 		_, err := mod.ExportedFunction("__cxa_increment_exception_refcount").Call(ctx, api.EncodeI32(info.excPtr))
 		if err != nil {
@@ -537,6 +545,7 @@ var CxaRethrowPrimaryException = &wasm.HostFunc{
 	ParamTypes: []wasm.ValueType{wasm.ValueTypeI32},
 	ParamNames: []string{"ptr"},
 	Code: wasm.Code{GoFunc: api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		mod = resolveMainModule(ctx, mod)
 		if stack[0] == 0 {
 			return
 		}
@@ -549,4 +558,20 @@ var CxaRethrowPrimaryException = &wasm.HostFunc{
 			panic(err)
 		}
 	})},
+}
+
+func resolveMainModule(ctx context.Context, mod api.Module) api.Module {
+	if mod.Name() == "" {
+		return mod
+	}
+
+	parentMod := ctx.Value(invokeFuncParentModuleKey{})
+	if parentMod != nil {
+		typedParentMod, ok := parentMod.(api.Module)
+		if ok {
+			return typedParentMod
+		}
+	}
+
+	panic(fmt.Errorf("resolveMainModule, need the main module for a host function but my module is %s and there is no parent module in the context", mod.Name()))
 }
