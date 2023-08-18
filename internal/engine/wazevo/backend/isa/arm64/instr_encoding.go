@@ -20,8 +20,8 @@ func (m *machine) encode(root *instruction) {
 func (i *instruction) encode(c backend.Compiler) {
 	switch kind := i.kind; kind {
 	case nop0:
-	case trapSequence:
-		encodeTrapSequence(c, i.rn.reg())
+	case exitSequence:
+		encodeExitSequence(c, i.rn.reg())
 	case ret:
 		// https://developer.arm.com/documentation/ddi0596/2020-12/Base-Instructions/RET--Return-from-subroutine-?lang=en
 		c.Emit4Bytes(encodeRet())
@@ -138,6 +138,17 @@ func (i *instruction) encode(c backend.Compiler) {
 			i.u3 == 1,
 			rn == sp,
 		))
+	case aluRRRShift:
+		r, amt, sop := i.rm.sr()
+		c.Emit4Bytes(encodeAluRRRShift(
+			aluOp(i.u1),
+			regNumberInEncoding[i.rd.realReg()],
+			regNumberInEncoding[i.rn.realReg()],
+			regNumberInEncoding[r.RealReg()],
+			uint32(amt),
+			sop,
+			i.u3 == 1,
+		))
 	case aluRRBitmaskImm:
 		c.Emit4Bytes(encodeAluBitmaskImmediate(
 			aluOp(i.u1),
@@ -184,7 +195,7 @@ func (i *instruction) encode(c backend.Compiler) {
 		// https://developer.arm.com/documentation/ddi0596/2020-12/SIMD-FP-Instructions/FCMP--Floating-point-quiet-Compare--scalar--?lang=en
 		rn, rm := regNumberInEncoding[i.rn.realReg()], regNumberInEncoding[i.rm.realReg()]
 		var ftype uint32
-		if i.u1 == 1 {
+		if i.u3 == 1 {
 			ftype = 0b01 // double precision.
 		}
 		c.Emit4Bytes(0b1111<<25 | ftype<<22 | 1<<21 | rm<<16 | 0b1<<13 | rn<<5)
@@ -201,9 +212,56 @@ func (i *instruction) encode(c backend.Compiler) {
 		c.Emit4Bytes(
 			uint32(off&0b11)<<29 | 0b1<<28 | uint32(off&0b1111111111_1111111100)<<3 | rd,
 		)
+	case cSel:
+		c.Emit4Bytes(encodeConditionalSelect(
+			kind,
+			regNumberInEncoding[i.rd.realReg()],
+			regNumberInEncoding[i.rn.realReg()],
+			regNumberInEncoding[i.rm.realReg()],
+			condFlag(i.u1),
+			i.u3 == 1,
+		))
+	case fpuCSel32:
+		c.Emit4Bytes(encodeFpuCSel(
+			regNumberInEncoding[i.rd.realReg()],
+			regNumberInEncoding[i.rn.realReg()],
+			regNumberInEncoding[i.rm.realReg()],
+			condFlag(i.u1),
+			false,
+		))
+	case fpuCSel64:
+		c.Emit4Bytes(encodeFpuCSel(
+			regNumberInEncoding[i.rd.realReg()],
+			regNumberInEncoding[i.rn.realReg()],
+			regNumberInEncoding[i.rm.realReg()],
+			condFlag(i.u1),
+			true,
+		))
 	default:
 		panic(i.String())
 	}
+}
+
+func encodeFpuCSel(rd, rn, rm uint32, c condFlag, _64bit bool) uint32 {
+	var ftype uint32
+	if _64bit {
+		ftype = 0b01 // double precision.
+	}
+	return 0b1111<<25 | ftype<<22 | 0b1<<21 | rm<<16 | uint32(c)<<12 | 0b11<<10 | rn<<5 | rd
+}
+
+// encodeConditionalSelect encodes as "Conditional select" in
+// https://developer.arm.com/documentation/ddi0596/2020-12/Index-by-Encoding/Data-Processing----Register?lang=en#condsel
+func encodeConditionalSelect(kind instructionKind, rd, rn, rm uint32, c condFlag, _64bit bool) uint32 {
+	if kind != cSel {
+		panic("TODO: support other conditional select")
+	}
+
+	ret := 0b110101<<23 | rm<<16 | uint32(c)<<12 | rn<<5 | rd
+	if _64bit {
+		ret |= 0b1 << 31
+	}
+	return ret
 }
 
 // encodeLoadFpuConst32 encodes the following three instructions:
@@ -560,6 +618,41 @@ func encodeAluRRImm12(op aluOp, rd, rn uint32, imm12 uint16, shiftBit byte, _64b
 	return _31to24<<24 | uint32(shiftBit)<<22 | uint32(imm12&0b111111111111)<<10 | rn<<5 | rd
 }
 
+// encodeAluRRR encodes as Data Processing (shifted register), depending on aluOp.
+// https://developer.arm.com/documentation/ddi0596/2020-12/Index-by-Encoding/Data-Processing----Register?lang=en#addsub_shift
+func encodeAluRRRShift(op aluOp, rd, rn, rm, amount uint32, shiftOp shiftOp, _64bit bool) uint32 {
+	var _31to24 uint32
+	switch op {
+	case aluOpAdd:
+		_31to24 = 0b00001011
+	case aluOpAddS:
+		_31to24 = 0b00101011
+	case aluOpSub:
+		_31to24 = 0b01001011
+	case aluOpSubS:
+		_31to24 = 0b01101011
+	default:
+		panic(op.String())
+	}
+
+	if _64bit {
+		_31to24 |= 0b1 << 7
+	}
+
+	var shift uint32
+	switch shiftOp {
+	case shiftOpLSL:
+		shift = 0b00
+	case shiftOpLSR:
+		shift = 0b01
+	case shiftOpASR:
+		shift = 0b10
+	default:
+		panic(shiftOp.String())
+	}
+	return _31to24<<24 | shift<<22 | rm<<16 | (amount << 10) | (rn << 5) | rd
+}
+
 // encodeAluRRR encodes as Data Processing (register), depending on aluOp.
 // https://developer.arm.com/documentation/ddi0596/2020-12/Index-by-Encoding/Data-Processing----Register?lang=en
 func encodeAluRRR(op aluOp, rd, rn, rm uint32, _64bit, isRnSp bool) uint32 {
@@ -740,8 +833,8 @@ func encodeAluRRImm(op aluOp, rd, rn, amount, _64bit uint32) uint32 {
 	return _64bit<<31 | opc<<29 | 0b100110<<23 | _64bit<<22 | immr<<16 | imms<<10 | rn<<5 | rd
 }
 
-// encodeTrapSequence matches the implementation detail of abiImpl.emitGoEntryPreamble.
-func encodeTrapSequence(c backend.Compiler, ctxReg regalloc.VReg) {
+// encodeExitSequence matches the implementation detail of abiImpl.emitGoEntryPreamble.
+func encodeExitSequence(c backend.Compiler, ctxReg regalloc.VReg) {
 	// Restore the FP, SP and LR, and return to the Go code:
 	// 		ldr fp, [savedExecutionContextPtr, #OriginalFramePointer]
 	// 		ldr tmp, [savedExecutionContextPtr, #OriginalStackPointer]

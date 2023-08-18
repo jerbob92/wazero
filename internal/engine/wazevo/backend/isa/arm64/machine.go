@@ -132,7 +132,9 @@ func (m *machine) Reset() {
 	m.clobberedRegs = m.clobberedRegs[:0]
 	m.orderedLabels = m.orderedLabels[:0]
 	m.regAllocFn.reset()
+	m.spillSlotSize = 0
 	m.unresolvedAddressModes = m.unresolvedAddressModes[:0]
+	m.rootInstr = nil
 }
 
 // InitializeABI implements backend.Machine InitializeABI.
@@ -210,10 +212,6 @@ func (m *machine) EndBlock() {
 
 func (m *machine) insert(i *instruction) {
 	m.pendingInstructions = append(m.pendingInstructions, i)
-}
-
-func (m *machine) insert2(i1, i2 *instruction) {
-	m.pendingInstructions = append(m.pendingInstructions, i1, i2)
 }
 
 func (m *machine) FlushPendingInstructions() {

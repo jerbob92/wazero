@@ -3,6 +3,7 @@ package backend
 import (
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/backend/regalloc"
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/ssa"
+	"github.com/tetratelabs/wazero/internal/engine/wazevo/wazevoapi"
 )
 
 // mockMachine implements Machine for testing.
@@ -23,6 +24,9 @@ type mockMachine struct {
 	rinfo                  *regalloc.RegisterInfo
 }
 
+// CompileGoFunctionTrampoline implements Machine.CompileGoFunctionTrampoline.
+func (m mockMachine) CompileGoFunctionTrampoline(wazevoapi.ExitCode, *ssa.Signature, bool) {}
+
 // Encode implements Machine.Encode.
 func (m mockMachine) Encode() {
 	// TODO implement me
@@ -30,8 +34,7 @@ func (m mockMachine) Encode() {
 }
 
 // ResolveRelocations implements Machine.ResolveRelocations.
-func (m mockMachine) ResolveRelocations(refToBinaryOffset map[ssa.FuncRef]int, binary []byte, relocations []RelocationInfo) {
-}
+func (m mockMachine) ResolveRelocations(map[ssa.FuncRef]int, []byte, []RelocationInfo) {}
 
 // SetupPrologue implements Machine.SetupPrologue.
 func (m mockMachine) SetupPrologue() {}

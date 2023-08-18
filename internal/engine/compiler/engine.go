@@ -656,10 +656,16 @@ func (e *moduleEngine) ResolveImportedFunction(index, indexInImportedModule wasm
 	e.functions[index] = imported.functions[indexInImportedModule]
 }
 
+// ResolveImportedMemory implements wasm.ModuleEngine.
+func (e *moduleEngine) ResolveImportedMemory(wasm.ModuleEngine) {}
+
 // FunctionInstanceReference implements the same method as documented on wasm.ModuleEngine.
 func (e *moduleEngine) FunctionInstanceReference(funcIndex wasm.Index) wasm.Reference {
 	return uintptr(unsafe.Pointer(&e.functions[funcIndex]))
 }
+
+// DoneInstantiation implements wasm.ModuleEngine.
+func (e *moduleEngine) DoneInstantiation() {}
 
 // NewFunction implements wasm.ModuleEngine.
 func (e *moduleEngine) NewFunction(index wasm.Index) api.Function {
@@ -675,24 +681,20 @@ func (e *moduleEngine) newFunction(f *function) api.Function {
 }
 
 // LookupFunction implements the same method as documented on wasm.ModuleEngine.
-func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId *wasm.FunctionTypeID, tableOffset wasm.Index) (f api.Function, err error) {
+func (e *moduleEngine) LookupFunction(t *wasm.TableInstance, typeId wasm.FunctionTypeID, tableOffset wasm.Index) (*wasm.ModuleInstance, wasm.Index) {
 	if tableOffset >= uint32(len(t.References)) || t.Type != wasm.RefTypeFuncref {
-		err = wasmruntime.ErrRuntimeInvalidTableAccess
-		return
+		panic(wasmruntime.ErrRuntimeInvalidTableAccess)
 	}
 	rawPtr := t.References[tableOffset]
 	if rawPtr == 0 {
-		err = wasmruntime.ErrRuntimeInvalidTableAccess
-		return
+		panic(wasmruntime.ErrRuntimeInvalidTableAccess)
 	}
 
 	tf := functionFromUintptr(rawPtr)
-	if typeId != nil && tf.typeID != *typeId {
-		err = wasmruntime.ErrRuntimeIndirectCallTypeMismatch
-		return
+	if tf.typeID != typeId {
+		panic(wasmruntime.ErrRuntimeIndirectCallTypeMismatch)
 	}
-	f = e.newFunction(tf)
-	return
+	return tf.moduleInstance, tf.parent.index
 }
 
 // functionFromUintptr resurrects the original *function from the given uintptr

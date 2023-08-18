@@ -141,7 +141,6 @@ type (
 		Val uint64
 		// ValHi is only used for vector type globals, and holds the higher bits of the vector.
 		ValHi uint64
-		// ^^ TODO: this should be guarded with atomics when mutable
 	}
 
 	// FunctionTypeID is a uniquely assigned integer for a function type.
@@ -154,8 +153,14 @@ type (
 const maximumFunctionTypes = 1 << 27
 
 // GetFunctionTypeID is used by emscripten.
-func (m *ModuleInstance) GetFunctionTypeID(t *FunctionType) (FunctionTypeID, error) {
-	return m.s.GetFunctionTypeID(t)
+func (m *ModuleInstance) GetFunctionTypeID(t *FunctionType) FunctionTypeID {
+	id, err := m.s.GetFunctionTypeID(t)
+	if err != nil {
+		// This is not recoverable in practice since the only error GetFunctionTypeID returns is
+		// when there's too many function types in the store.
+		panic(err)
+	}
+	return id
 }
 
 func (m *ModuleInstance) buildElementInstances(elements []ElementSegment) {
@@ -381,6 +386,8 @@ func (s *Store) instantiate(
 			return nil, fmt.Errorf("start %s failed: %w", module.funcDesc(SectionIDFunction, funcIdx), err)
 		}
 	}
+
+	m.Engine.DoneInstantiation()
 	return
 }
 
@@ -449,6 +456,7 @@ func (m *ModuleInstance) resolveImports(module *Module) (err error) {
 					return
 				}
 				m.MemoryInstance = importedMemory
+				m.Engine.ResolveImportedMemory(importedModule.Engine)
 			case ExternTypeGlobal:
 				expected := i.DescGlobal
 				importedGlobal := importedModule.Globals[imported.Index]

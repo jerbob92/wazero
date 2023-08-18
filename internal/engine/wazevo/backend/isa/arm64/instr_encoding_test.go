@@ -7,6 +7,7 @@ import (
 
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/backend/regalloc"
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/ssa"
+	"github.com/tetratelabs/wazero/internal/engine/wazevo/wazevoapi"
 	"github.com/tetratelabs/wazero/internal/testing/require"
 )
 
@@ -16,6 +17,86 @@ func TestInstruction_encode(t *testing.T) {
 		setup func(*instruction)
 		want  string
 	}{
+		{want: "4100839a", setup: func(i *instruction) { i.asCSel(operandNR(x1VReg), operandNR(x2VReg), operandNR(x3VReg), eq, true) }},
+		{want: "4110839a", setup: func(i *instruction) { i.asCSel(operandNR(x1VReg), operandNR(x2VReg), operandNR(x3VReg), ne, true) }},
+		{want: "4100831a", setup: func(i *instruction) { i.asCSel(operandNR(x1VReg), operandNR(x2VReg), operandNR(x3VReg), eq, false) }},
+		{want: "4110831a", setup: func(i *instruction) { i.asCSel(operandNR(x1VReg), operandNR(x2VReg), operandNR(x3VReg), ne, false) }},
+		{want: "41cc631e", setup: func(i *instruction) { i.asFpuCSel(operandNR(v1VReg), operandNR(v2VReg), operandNR(v3VReg), gt, true) }},
+		{want: "41bc631e", setup: func(i *instruction) { i.asFpuCSel(operandNR(v1VReg), operandNR(v2VReg), operandNR(v3VReg), lt, true) }},
+		{want: "41cc231e", setup: func(i *instruction) { i.asFpuCSel(operandNR(v1VReg), operandNR(v2VReg), operandNR(v3VReg), gt, false) }},
+		{want: "41bc231e", setup: func(i *instruction) { i.asFpuCSel(operandNR(v1VReg), operandNR(v2VReg), operandNR(v3VReg), lt, false) }},
+		{want: "5b28030b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), false)
+		}},
+		{want: "5b28038b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), true)
+		}},
+		{want: "5b28032b", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), false)
+		}},
+		{want: "5b2803ab", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), true)
+		}},
+		{want: "5b28430b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), false)
+		}},
+		{want: "5b28438b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), true)
+		}},
+		{want: "5b28432b", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), false)
+		}},
+		{want: "5b2843ab", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), true)
+		}},
+		{want: "5b28830b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), false)
+		}},
+		{want: "5b28838b", setup: func(i *instruction) {
+			i.asALU(aluOpAdd, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), true)
+		}},
+		{want: "5b28832b", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), false)
+		}},
+		{want: "5b2883ab", setup: func(i *instruction) {
+			i.asALU(aluOpAddS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), true)
+		}},
+		{want: "5b28034b", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), false)
+		}},
+		{want: "5b2803cb", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), true)
+		}},
+		{want: "5b28036b", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), false)
+		}},
+		{want: "5b2803eb", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSL), true)
+		}},
+		{want: "5b28434b", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), false)
+		}},
+		{want: "5b2843cb", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), true)
+		}},
+		{want: "5b28436b", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), false)
+		}},
+		{want: "5b2843eb", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpLSR), true)
+		}},
+		{want: "5b28834b", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), false)
+		}},
+		{want: "5b2883cb", setup: func(i *instruction) {
+			i.asALU(aluOpSub, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), true)
+		}},
+		{want: "5b28836b", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), false)
+		}},
+		{want: "5b2883eb", setup: func(i *instruction) {
+			i.asALU(aluOpSubS, operandNR(tmpRegVReg), operandNR(x2VReg), operandSR(x3VReg, 10, shiftOpASR), true)
+		}},
 		{want: "60033fd6", setup: func(i *instruction) {
 			i.asCallIndirect(tmpRegVReg, nil)
 		}},
@@ -57,8 +138,8 @@ func TestInstruction_encode(t *testing.T) {
 		{want: "b21c4093", setup: func(i *instruction) { i.asExtend(x18VReg, x5VReg, 8, 64, true) }},
 		{want: "b23c4093", setup: func(i *instruction) { i.asExtend(x18VReg, x5VReg, 16, 64, true) }},
 		{want: "b27c4093", setup: func(i *instruction) { i.asExtend(x18VReg, x5VReg, 32, 64, true) }},
-		{want: "f2079f9a", setup: func(i *instruction) { i.asCSst(x18VReg, ne) }},
-		{want: "f2179f9a", setup: func(i *instruction) { i.asCSst(x18VReg, eq) }},
+		{want: "f2079f9a", setup: func(i *instruction) { i.asCSet(x18VReg, ne) }},
+		{want: "f2179f9a", setup: func(i *instruction) { i.asCSet(x18VReg, eq) }},
 		{want: "32008012", setup: func(i *instruction) { i.asMOVN(x18VReg, 1, 0, false) }},
 		{want: "52559512", setup: func(i *instruction) { i.asMOVN(x18VReg, 0xaaaa, 0, false) }},
 		{want: "f2ff9f12", setup: func(i *instruction) { i.asMOVN(x18VReg, 0xffff, 0, false) }},
@@ -749,13 +830,23 @@ func TestInstruction_encoding_store(t *testing.T) {
 	}
 }
 
-func Test_encodeTrapSequence(t *testing.T) {
+func Test_encodeExitSequence(t *testing.T) {
 	m := &mockCompiler{}
-	encodeTrapSequence(m, x22VReg)
+	encodeExitSequence(m, x22VReg)
 	// ldr x29, [x22, #0x10]
 	// ldr x27, [x22, #0x18]
 	// mov sp, x27
 	// ldr x30, [x22, #0x20]
 	// ret
 	require.Equal(t, "dd0a40f9db0e40f97f030091de1240f9c0035fd6", hex.EncodeToString(m.buf))
+	require.Equal(t, len(m.buf), exitSequenceSize)
+}
+
+func Test_lowerExitWithCodeEncodingSize(t *testing.T) {
+	compiler, _, m := newSetupWithMockContext()
+	m.lowerExitWithCode(x10VReg, wazevoapi.ExitCodeGrowStack)
+	m.FlushPendingInstructions()
+	require.NotNil(t, m.perBlockHead)
+	m.encode(m.perBlockHead)
+	require.Equal(t, exitWithCodeEncodingSize, len(compiler.Buf()))
 }
