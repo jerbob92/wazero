@@ -59,3 +59,7 @@ func (bt *bigintType) ReadValueFromPointer(ctx context.Context, mod api.Module, 
 
 	return nil, fmt.Errorf("unknown bigint type: %s", bt.name)
 }
+
+func (bt *bigintType) NativeType() api.ValueType {
+	return api.ValueTypeI64
+}

@@ -18,3 +18,7 @@ func (vt *voidType) ToWireType(ctx context.Context, mod api.Module, destructors 
 	// TODO: assert if anything else is given?
 	return 0, nil
 }
+
+func (vt *voidType) NativeType() api.ValueType {
+	return 0
+}

@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/internal/wasm"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental/table"
 )
 
 func (e *engine) CallFunction(ctx context.Context, name string, arguments ...any) (any, error) {
@@ -121,30 +122,39 @@ func (e *engine) RegisterClass(name string, goStruct any) error {
 	return err
 }
 
-func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32) (api.Function, error) {
+func (e *engine) newInvokeFunc(signaturePtr, rawInvoker int32, expectedParamTypes, expectedResultTypes []api.ValueType) (api.Function, error) {
 	// Not used in Wazero.
-	//signature, err := readCString(mod, uint32(signaturePtr))
-	//if err != nil {
-	//	panic(fmt.Errorf("could not read signature: %w", err))
-	//}
-
-	// This needs copy (not reslice) because the stack is reused for results.
-	// Consider invoke_i (zero arguments, one result): index zero (tableOffset)
-	// is needed to store the result.
-	tableOffset := wasm.Index(rawInvoker) // position in the module's only table.
-
-	m := e.mod.(*wasm.ModuleInstance)
-
-	// Lookup the table index we will call.
-	t := m.Tables[0] // Note: Emscripten doesn't use multiple tables
-
-	// We do not know the function type ID and also don't really care.
-	f, err := m.Engine.LookupFunction(t, nil, tableOffset)
+	signature, err := e.readCString(uint32(signaturePtr))
 	if err != nil {
-		return nil, err
+		panic(fmt.Errorf("could not read signature: %w", err))
 	}
 
-	return f, err
+	// Filter out void result.
+	if len(expectedResultTypes) == 1 && expectedResultTypes[0] == 0 {
+		expectedResultTypes = []api.ValueType{}
+	}
+
+	var lookupErr error
+	f := func() api.Function {
+		defer func() {
+			if recoverErr := recover(); recoverErr != nil {
+				realError, ok := recoverErr.(error)
+				if ok {
+					lookupErr = fmt.Errorf("could not crate invoke func for signature %s on invoker %d: %w", signature, rawInvoker, realError)
+				}
+				lookupErr = fmt.Errorf("could not crate invoke func for signature %s on invoker %d: %v", signature, rawInvoker, recoverErr)
+			}
+		}()
+
+		// Note: Emscripten doesn't use multiple tables
+		return table.LookupFunction(e.mod, 0, uint32(rawInvoker), expectedParamTypes, expectedResultTypes)
+	}()
+
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+
+	return f, nil
 }
 
 func (e *engine) heap32VectorToArray(count, firstElement int32) ([]int32, error) {

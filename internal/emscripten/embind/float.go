@@ -54,3 +54,11 @@ func (ft *floatType) ReadValueFromPointer(ctx context.Context, mod api.Module, p
 
 	return nil, fmt.Errorf("unknown float type: %s", ft.name)
 }
+
+func (ft *floatType) NativeType() api.ValueType {
+	if ft.size == 4 {
+		return api.ValueTypeF32
+	}
+
+	return api.ValueTypeF64
+}

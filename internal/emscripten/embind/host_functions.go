@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/internal/wasm"
-	"log"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/internal/wasm"
 )
 
 const FunctionEmbindRegisterFunction = "_embind_register_function"
@@ -39,18 +39,11 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		// Create an api.Function to be able to invoke the function on the
-		// Emscripten side.
-		invokerFunc, err := engine.newInvokeFunc(signaturePtr, rawInvoker)
-		if err != nil {
-			panic(fmt.Errorf("could not create invoke func: %w", err))
-		}
-
 		publicSymbolArgs := argCount - 1
 
 		// Set a default callback that errors out when not all types are resolved.
 		err = engine.exposePublicSymbol(name, func(ctx context.Context, this any, arguments ...any) (any, error) {
-			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call %s due to unbound types", name), argTypes)
+			return nil, engine.createUnboundTypeError(ctx, fmt.Sprintf("Cannot call _embind_register_function %s due to unbound types", name), argTypes)
 		}, &publicSymbolArgs)
 		if err != nil {
 			panic(fmt.Errorf("could not expose public symbol: %w", err))
@@ -60,6 +53,19 @@ var EmbindRegisterFunction = &wasm.HostFunc{
 		err = engine.whenDependentTypesAreResolved([]int32{}, argTypes, func(argTypes []registeredType) ([]registeredType, error) {
 			invokerArgsArray := []registeredType{argTypes[0] /* return value */, nil /* no class 'this'*/}
 			invokerArgsArray = append(invokerArgsArray, argTypes[1:]... /* actual params */)
+
+			expectedParamTypes := make([]api.ValueType, len(invokerArgsArray[2:])+1)
+			expectedParamTypes[0] = api.ValueTypeI32 // fn
+			for i := range invokerArgsArray[2:] {
+				expectedParamTypes[i+1] = invokerArgsArray[i+2].NativeType()
+			}
+
+			// Create an api.Function to be able to invoke the function on the
+			// Emscripten side.
+			invokerFunc, err := engine.newInvokeFunc(signaturePtr, rawInvoker, expectedParamTypes, []api.ValueType{argTypes[0].NativeType()})
+			if err != nil {
+				return nil, fmt.Errorf("could not create _embind_register_function invoke func: %w", err)
+			}
 
 			err = engine.replacePublicSymbol(name, engine.craftInvokerFunction(name, invokerArgsArray, nil /* no class 'this'*/, invokerFunc, fn, isAsync), &publicSymbolArgs)
 			if err != nil {
@@ -722,7 +728,6 @@ var EmvalNew = &wasm.HostFunc{
 							defer func() {
 								if recoverErr := recover(); recoverErr != nil {
 									realError, ok := recoverErr.(error)
-									log.Println(realError)
 									if ok {
 										err = fmt.Errorf("could not set arg %d with embind_arg tag on emval %T: %w", i, handle, realError)
 									}
@@ -1059,14 +1064,14 @@ var EmvalRegisterClass = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		getActualTypeFunc, err := engine.newInvokeFunc(getActualTypeSignature, getActualType)
+		getActualTypeFunc, err := engine.newInvokeFunc(getActualTypeSignature, getActualType, []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32})
 		if err != nil {
 			panic(fmt.Errorf("could not read getActualType: %w", err))
 		}
 
 		var upcastFunc api.Function
 		if upcast > 0 {
-			upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast)
+			upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
 			if err != nil {
 				panic(fmt.Errorf("could not read upcast: %w", err))
 			}
@@ -1074,13 +1079,13 @@ var EmvalRegisterClass = &wasm.HostFunc{
 
 		var downcastFunc api.Function
 		if downcast > 0 {
-			downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast)
+			downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
 			if err != nil {
 				panic(fmt.Errorf("could not read downcast: %w", err))
 			}
 		}
 
-		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor, []api.ValueType{api.ValueTypeI32}, []api.ValueType{})
 		if err != nil {
 			panic(fmt.Errorf("could not read rawDestructor: %w", err))
 		}
@@ -1231,11 +1236,6 @@ var EmbindRegisterClassConstructor = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read arg types: %w", err))
 		}
 
-		invokerFunc, err := engine.newInvokeFunc(invokerSignature, invoker)
-		if err != nil {
-			panic(fmt.Errorf("could not create invoke func: %w", err))
-		}
-
 		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(resolvedTypes []registeredType) ([]registeredType, error) {
 			classType := resolvedTypes[0].(*registeredPointerType)
 			humanName := "constructor " + classType.name
@@ -1257,6 +1257,17 @@ var EmbindRegisterClassConstructor = &wasm.HostFunc{
 				newArgtypes := []registeredType{argTypes[0], nil}
 				if len(argTypes) > 1 {
 					newArgtypes = append(newArgtypes, argTypes[1:]...)
+				}
+
+				expectedParamTypes := make([]api.ValueType, len(newArgtypes[2:])+1)
+				expectedParamTypes[0] = api.ValueTypeI32 // fn
+				for i := range newArgtypes[2:] {
+					expectedParamTypes[i+1] = newArgtypes[i+2].NativeType()
+				}
+
+				invokerFunc, err := engine.newInvokeFunc(invokerSignature, invoker, expectedParamTypes, []api.ValueType{argTypes[0].NativeType()})
+				if err != nil {
+					panic(fmt.Errorf("could not create invoke func: %w", err))
 				}
 
 				classType.registeredClass.constructors[argCount-1] = engine.craftInvokerFunction(humanName, newArgtypes, nil, invokerFunc, rawConstructor, false)
@@ -1311,11 +1322,6 @@ var EmbindRegisterClassFunction = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read method name: %w", err))
 		}
 
-		rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker)
-		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
-		}
-
 		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(classTypes []registeredType) ([]registeredType, error) {
 			classType := classTypes[0].(*registeredPointerType)
 			humanName := classType.Name() + "." + methodName
@@ -1350,6 +1356,17 @@ var EmbindRegisterClassFunction = &wasm.HostFunc{
 			}
 
 			err = engine.whenDependentTypesAreResolved([]int32{}, rawArgTypes, func(argTypes []registeredType) ([]registeredType, error) {
+				expectedResultTypes := make([]api.ValueType, len(argTypes))
+				expectedResultTypes[0] = api.ValueTypeI32 // contextPtr
+				for i := range argTypes[1:] {
+					expectedResultTypes[i+1] = argTypes[i+1].NativeType()
+				}
+
+				rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker, expectedResultTypes, []api.ValueType{argTypes[0].NativeType()})
+				if err != nil {
+					panic(fmt.Errorf("could not create _embind_register_class_function raw invoke func: %w", err))
+				}
+
 				memberFunction := &publicSymbol{
 					fn: engine.craftInvokerFunction(humanName, argTypes, classType, rawInvokerFunc, contextPtr, isAsync > 0),
 				}
@@ -1413,11 +1430,6 @@ var EmbindRegisterClassClassFunction = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read method name: %w", err))
 		}
 
-		rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker)
-		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
-		}
-
 		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{rawClassType}, func(classTypes []registeredType) ([]registeredType, error) {
 			classType := classTypes[0].(*registeredPointerType)
 			humanName := classType.Name() + "." + methodName
@@ -1448,6 +1460,17 @@ var EmbindRegisterClassClassFunction = &wasm.HostFunc{
 			err = engine.whenDependentTypesAreResolved([]int32{}, rawArgTypes, func(argTypes []registeredType) ([]registeredType, error) {
 				invokerArgsArray := []registeredType{argTypes[0], nil}
 				invokerArgsArray = append(invokerArgsArray, argTypes[1:]...)
+
+				expectedParamTypes := make([]api.ValueType, len(invokerArgsArray[2:])+1)
+				expectedParamTypes[0] = api.ValueTypeI32 // fn
+				for i := range invokerArgsArray[2:] {
+					expectedParamTypes[i+1] = invokerArgsArray[i+2].NativeType()
+				}
+
+				rawInvokerFunc, err := engine.newInvokeFunc(invokerSignature, rawInvoker, expectedParamTypes, []api.ValueType{argTypes[0].NativeType()})
+				if err != nil {
+					panic(fmt.Errorf("could not create raw invoke func: %w", err))
+				}
 
 				memberFunction := &publicSymbol{
 					fn: engine.craftInvokerFunction(humanName, invokerArgsArray, nil, rawInvokerFunc, fn, isAsync > 0),
@@ -1521,11 +1544,6 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read method name: %w", err))
 		}
 
-		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
-		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
-		}
-
 		err = engine.whenDependentTypesAreResolved([]int32{}, []int32{classType}, func(classTypes []registeredType) ([]registeredType, error) {
 			classType := classTypes[0].(*registeredPointerType)
 			humanName := classType.Name() + "." + fieldName
@@ -1552,11 +1570,17 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 
 			requiredTypes := []int32{getterReturnType}
 			if setter > 0 {
-				requiredTypes = append(requiredTypes, getterReturnType)
+				requiredTypes = append(requiredTypes, setterArgumentType)
 			}
 
 			err = engine.whenDependentTypesAreResolved([]int32{}, requiredTypes, func(types []registeredType) ([]registeredType, error) {
 				getterReturnType := types[0]
+
+				getterFunc, err := engine.newInvokeFunc(getterSignature, getter, []api.ValueType{}, []api.ValueType{getterReturnType.NativeType()})
+				if err != nil {
+					return nil, fmt.Errorf("could not create raw invoke func: %w", err)
+				}
+
 				desc := &classProperty{
 					get: func(ctx context.Context, mod api.Module, this any) (any, error) {
 						ptr, err := engine.validateThis(ctx, this, classType, humanName+" getter")
@@ -1574,12 +1598,11 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 				}
 
 				if setter > 0 {
-					setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
+					setterArgumentType := types[1]
+					setterFunc, err := engine.newInvokeFunc(setterSignature, setter, []api.ValueType{setterArgumentType.NativeType()}, []api.ValueType{})
 					if err != nil {
 						return nil, err
 					}
-
-					setterArgumentType := types[1]
 
 					desc.set = func(ctx context.Context, mod api.Module, this any, v any) error {
 						ptr, err := engine.validateThis(ctx, this, classType, humanName+" setter")
@@ -1648,14 +1671,14 @@ var EmbindRegisterValueArray = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor)
+		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create rawConstructorFunc: %w", err))
 		}
 
-		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor, []api.ValueType{api.ValueTypeI32}, []api.ValueType{})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create rawDestructorFunc: %w", err))
 		}
 
 		engine.registeredTuples[rawType] = &registeredTuple{
@@ -1696,23 +1719,15 @@ var EmbindRegisterValueArrayElement = &wasm.HostFunc{
 		setter := api.DecodeI32(stack[7])
 		setterContext := api.DecodeI32(stack[8])
 
-		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
-		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
-		}
-
-		setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
-		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
-		}
-
 		engine.registeredTuples[rawTupleType].elements = append(engine.registeredTuples[rawTupleType].elements, &registeredTupleElement{
-			getterReturnType:   getterReturnType,
-			getter:             getterFunc,
-			getterContext:      getterContext,
-			setterArgumentType: setterArgumentType,
-			setter:             setterFunc,
-			setterContext:      setterContext,
+			getterPtr:            getter,
+			getterSignaturePtr:   getterSignature,
+			getterReturnTypeID:   getterReturnType,
+			getterContext:        getterContext,
+			setterPtr:            setter,
+			setterSignaturePtr:   setterSignature,
+			setterArgumentTypeID: setterArgumentType,
+			setterContext:        setterContext,
 		})
 	})},
 }
@@ -1736,16 +1751,35 @@ var EmbindFinalizeValueArray = &wasm.HostFunc{
 
 		elementTypes := []int32{}
 		for i := range elements {
-			elementTypes = append(elementTypes, elements[i].getterReturnType)
-			elementTypes = append(elementTypes, elements[i].setterArgumentType)
+			elementTypes = append(elementTypes, elements[i].getterReturnTypeID)
+		}
+
+		for i := range elements {
+			elementTypes = append(elementTypes, elements[i].setterArgumentTypeID)
 		}
 
 		err := engine.whenDependentTypesAreResolved([]int32{rawTupleType}, elementTypes, func(types []registeredType) ([]registeredType, error) {
 			for i := range elements {
 				getterReturnType := types[i]
+
+				getterFunc, err := engine.newInvokeFunc(elements[i].getterSignaturePtr, elements[i].getterPtr, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{getterReturnType.NativeType()})
+				if err != nil {
+					return nil, fmt.Errorf("could not create getterFunc: %w", err)
+				}
+
+				elements[i].getter = getterFunc
+
 				getter := elements[i].getter
 				getterContext := elements[i].getterContext
 				setterArgumentType := types[i+elementsLength]
+
+				setterFunc, err := engine.newInvokeFunc(elements[i].setterSignaturePtr, elements[i].setterPtr, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, types[1].NativeType()}, []api.ValueType{})
+				if err != nil {
+					return nil, fmt.Errorf("could not create setterFunc: %w", err)
+				}
+
+				elements[i].setter = setterFunc
+
 				setter := elements[i].setter
 				setterContext := elements[i].setterContext
 				elements[i].read = func(ctx context.Context, mod api.Module, ptr int32) (any, error) {
@@ -1821,14 +1855,14 @@ var EmbindRegisterValueObject = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read name: %w", err))
 		}
 
-		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor)
+		rawConstructorFunc, err := engine.newInvokeFunc(constructorSignature, rawConstructor, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create rawConstructorFunc: %w", err))
 		}
 
-		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor)
+		rawDestructorFunc, err := engine.newInvokeFunc(destructorSignature, rawDestructor, []api.ValueType{api.ValueTypeI32}, []api.ValueType{})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create rawDestructorFunc: %w", err))
 		}
 
 		engine.registeredObjects[rawType] = &registeredObject{
@@ -1876,14 +1910,14 @@ var EmbindRegisterValueObjectField = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read field name: %w", err))
 		}
 
-		getterFunc, err := engine.newInvokeFunc(getterSignature, getter)
+		getterFunc, err := engine.newInvokeFunc(getterSignature, getter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create getterFunc: %w", err))
 		}
 
-		setterFunc, err := engine.newInvokeFunc(setterSignature, setter)
+		setterFunc, err := engine.newInvokeFunc(setterSignature, setter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{})
 		if err != nil {
-			panic(fmt.Errorf("could not create raw invoke func: %w", err))
+			panic(fmt.Errorf("could not create setterFunc: %w", err))
 		}
 
 		engine.registeredObjects[structType].fields = append(engine.registeredObjects[structType].fields, &registeredObjectField{

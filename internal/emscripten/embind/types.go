@@ -45,6 +45,10 @@ func (bt *baseType) DeleteObject(ctx context.Context, mod api.Module, handle any
 	return nil
 }
 
+func (bt *baseType) NativeType() api.ValueType {
+	return api.ValueTypeI32
+}
+
 type registeredType interface {
 	RawType() int32
 	Name() string
@@ -56,6 +60,7 @@ type registeredType interface {
 	ReadValueFromPointer(ctx context.Context, mod api.Module, pointer uint32) (any, error)
 	HasDeleteObject() bool
 	DeleteObject(ctx context.Context, mod api.Module, handle any) error
+	NativeType() api.ValueType
 }
 
 type registerTypeOptions struct {
@@ -86,14 +91,18 @@ type registeredTuple struct {
 }
 
 type registeredTupleElement struct {
-	getterReturnType   int32
-	getter             api.Function
-	getterContext      int32
-	setterArgumentType int32
-	setter             api.Function
-	setterContext      int32
-	read               func(ctx context.Context, mod api.Module, ptr int32) (any, error)
-	write              func(ctx context.Context, mod api.Module, ptr int32, o any) error
+	getterReturnTypeID   int32
+	getterPtr            int32
+	getterSignaturePtr   int32
+	getter               api.Function
+	getterContext        int32
+	setterArgumentTypeID int32
+	setterPtr            int32
+	setterSignaturePtr   int32
+	setter               api.Function
+	setterContext        int32
+	read                 func(ctx context.Context, mod api.Module, ptr int32) (any, error)
+	write                func(ctx context.Context, mod api.Module, ptr int32, o any) error
 }
 
 type registeredObject struct {
