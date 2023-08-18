@@ -17,23 +17,26 @@ type Compiler struct {
 	m      *wasm.Module
 	offset *wazevoapi.ModuleContextOffsetData
 	// ssaBuilder is a ssa.Builder used by this frontend.
-	ssaBuilder ssa.Builder
-	signatures map[*wasm.FunctionType]*ssa.Signature
+	ssaBuilder    ssa.Builder
+	signatures    map[*wasm.FunctionType]*ssa.Signature
+	memoryGrowSig ssa.Signature
 
 	// Followings are reset by per function.
 
 	// wasmLocalToVariable maps the index (considered as wasm.Index of locals)
 	// to the corresponding ssa.Variable.
-	wasmLocalToVariable    map[wasm.Index]ssa.Variable
-	wasmLocalFunctionIndex wasm.Index
-	wasmFunctionTyp        *wasm.FunctionType
-	wasmFunctionLocalTypes []wasm.ValueType
-	wasmFunctionBody       []byte
+	wasmLocalToVariable                   map[wasm.Index]ssa.Variable
+	wasmLocalFunctionIndex                wasm.Index
+	wasmFunctionTyp                       *wasm.FunctionType
+	wasmFunctionLocalTypes                []wasm.ValueType
+	wasmFunctionBody                      []byte
+	memoryBaseVariable, memoryLenVariable ssa.Variable
+	needMemory                            bool
+	globalVariables                       []ssa.Variable
+	globalVariablesTypes                  []ssa.Type
+	mutableGlobalVariablesIndexes         []wasm.Index // index to ^.
 	// br is reused during lowering.
-	br *bytes.Reader
-	// trapBlocks maps wazevoapi.ExitCode to the corresponding BasicBlock which
-	// exits the execution with the code.
-	trapBlocks    [wazevoapi.ExitCodeCount]ssa.BasicBlock
+	br            *bytes.Reader
 	loweringState loweringState
 
 	execCtxPtrValue, moduleCtxPtrValue ssa.Value
@@ -49,7 +52,7 @@ func NewFrontendCompiler(m *wasm.Module, ssaBuilder ssa.Builder, offset *wazevoa
 		offset:              offset,
 	}
 
-	c.signatures = make(map[*wasm.FunctionType]*ssa.Signature, len(m.TypeSection))
+	c.signatures = make(map[*wasm.FunctionType]*ssa.Signature, len(m.TypeSection)+1)
 	for i := range m.TypeSection {
 		wasmSig := &m.TypeSection[i]
 		sig := &ssa.Signature{
@@ -61,14 +64,24 @@ func NewFrontendCompiler(m *wasm.Module, ssaBuilder ssa.Builder, offset *wazevoa
 		sig.Params[0] = executionContextPtrTyp
 		sig.Params[1] = moduleContextPtrTyp
 		for j, typ := range wasmSig.Params {
-			sig.Params[j+2] = wasmToSSA(typ)
+			sig.Params[j+2] = WasmTypeToSSAType(typ)
 		}
 		for j, typ := range wasmSig.Results {
-			sig.Results[j] = wasmToSSA(typ)
+			sig.Results[j] = WasmTypeToSSAType(typ)
 		}
 		c.signatures[wasmSig] = sig
 		c.ssaBuilder.DeclareSignature(sig)
 	}
+
+	c.memoryGrowSig = ssa.Signature{
+		ID: ssa.SignatureID(len(m.TypeSection)),
+		// Takes execution context and the page size to grow.
+		Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32},
+		// Returns the new size.
+		Results: []ssa.Type{ssa.TypeI32},
+	}
+	c.ssaBuilder.DeclareSignature(&c.memoryGrowSig)
+
 	return c
 }
 
@@ -76,7 +89,6 @@ func NewFrontendCompiler(m *wasm.Module, ssaBuilder ssa.Builder, offset *wazevoa
 func (c *Compiler) Init(idx wasm.Index, typ *wasm.FunctionType, localTypes []wasm.ValueType, body []byte) {
 	c.ssaBuilder.Init(c.signatures[typ])
 	c.loweringState.reset()
-	c.trapBlocks = [wazevoapi.ExitCodeCount]ssa.BasicBlock{}
 
 	c.wasmLocalFunctionIndex = idx
 	c.wasmFunctionTyp = typ
@@ -122,16 +134,16 @@ func (c *Compiler) LowerToSSA() error {
 	builder.AnnotateValue(c.moduleCtxPtrValue, "module_ctx")
 
 	for i, typ := range c.wasmFunctionTyp.Params {
-		st := wasmToSSA(typ)
+		st := WasmTypeToSSAType(typ)
 		variable := builder.DeclareVariable(st)
 		value := entryBlock.AddParam(builder, st)
 		builder.DefineVariable(variable, value, entryBlock)
 		c.wasmLocalToVariable[wasm.Index(i)] = variable
 	}
 	c.declareWasmLocals(entryBlock)
+	c.declareNecessaryVariables()
 
 	c.lowerBody(entryBlock)
-	c.emitTrapBlocks()
 	return nil
 }
 
@@ -144,7 +156,7 @@ func (c *Compiler) localVariable(index wasm.Index) ssa.Variable {
 func (c *Compiler) declareWasmLocals(entry ssa.BasicBlock) {
 	localCount := wasm.Index(len(c.wasmFunctionTyp.Params))
 	for i, typ := range c.wasmFunctionLocalTypes {
-		st := wasmToSSA(typ)
+		st := WasmTypeToSSAType(typ)
 		variable := c.ssaBuilder.DeclareVariable(st)
 		c.wasmLocalToVariable[wasm.Index(i)+localCount] = variable
 
@@ -168,8 +180,55 @@ func (c *Compiler) declareWasmLocals(entry ssa.BasicBlock) {
 	}
 }
 
-// wasmToSSA converts wasm.ValueType to ssa.Type.
-func wasmToSSA(vt wasm.ValueType) ssa.Type {
+func (c *Compiler) declareNecessaryVariables() {
+	c.needMemory = c.m.ImportMemoryCount > 0 || c.m.MemorySection != nil
+	if c.needMemory {
+		c.memoryBaseVariable = c.ssaBuilder.DeclareVariable(ssa.TypeI64)
+		c.memoryLenVariable = c.ssaBuilder.DeclareVariable(ssa.TypeI64)
+	}
+
+	c.globalVariables = c.globalVariables[:0]
+	c.mutableGlobalVariablesIndexes = c.mutableGlobalVariablesIndexes[:0]
+	c.globalVariablesTypes = c.globalVariablesTypes[:0]
+	for _, imp := range c.m.ImportSection {
+		if imp.Type == wasm.ExternTypeGlobal {
+			desc := imp.DescGlobal
+			c.declareWasmGlobal(desc.ValType, desc.Mutable)
+		}
+	}
+	for _, g := range c.m.GlobalSection {
+		desc := g.Type
+		c.declareWasmGlobal(desc.ValType, desc.Mutable)
+	}
+
+	// TODO: add tables.
+}
+
+func (c *Compiler) declareWasmGlobal(typ wasm.ValueType, mutable bool) {
+	var st ssa.Type
+	switch typ {
+	case wasm.ValueTypeI32:
+		st = ssa.TypeI32
+	case wasm.ValueTypeI64:
+		st = ssa.TypeI64
+	case wasm.ValueTypeF32:
+		st = ssa.TypeF32
+	case wasm.ValueTypeF64:
+		st = ssa.TypeF64
+	default:
+		panic("TODO: " + wasm.ValueTypeName(typ))
+	}
+	v := c.ssaBuilder.DeclareVariable(st)
+	index := wasm.Index(len(c.globalVariables))
+	c.globalVariables = append(c.globalVariables, v)
+	c.globalVariablesTypes = append(c.globalVariablesTypes, st)
+	if mutable {
+		c.mutableGlobalVariablesIndexes = append(c.mutableGlobalVariablesIndexes, index)
+	}
+}
+
+// WasmTypeToSSAType converts wasm.ValueType to ssa.Type.
+func WasmTypeToSSAType(vt wasm.ValueType) ssa.Type {
 	switch vt {
 	case wasm.ValueTypeI32:
 		return ssa.TypeI32
@@ -187,7 +246,7 @@ func wasmToSSA(vt wasm.ValueType) ssa.Type {
 // addBlockParamsFromWasmTypes adds the block parameters to the given block.
 func (c *Compiler) addBlockParamsFromWasmTypes(tps []wasm.ValueType, blk ssa.BasicBlock) {
 	for _, typ := range tps {
-		st := wasmToSSA(typ)
+		st := WasmTypeToSSAType(typ)
 		blk.AddParam(c.ssaBuilder, st)
 	}
 }
@@ -196,40 +255,4 @@ func (c *Compiler) addBlockParamsFromWasmTypes(tps []wasm.ValueType, blk ssa.Bas
 func (c *Compiler) formatBuilder() string {
 	// TODO: use source position to add the Wasm-level source info.
 	return c.ssaBuilder.Format()
-}
-
-// getOrCreateTrapBlock returns the trap block for the given trap code.
-func (c *Compiler) getOrCreateTrapBlock(code wazevoapi.ExitCode) ssa.BasicBlock {
-	blk := c.trapBlocks[code]
-	if blk == nil {
-		blk = c.ssaBuilder.AllocateBasicBlock()
-		c.trapBlocks[code] = blk
-	}
-	return blk
-}
-
-// emitTrapBlocks emits the trap blocks.
-func (c *Compiler) emitTrapBlocks() {
-	builder := c.ssaBuilder
-	for exitCode := wazevoapi.ExitCode(0); exitCode < wazevoapi.ExitCodeCount; exitCode++ {
-		blk := c.trapBlocks[exitCode]
-		if blk == nil {
-			continue
-		}
-		builder.SetCurrentBlock(blk)
-
-		exitCodeInstr := builder.AllocateInstruction()
-		exitCodeInstr.AsIconst32(uint32(exitCode))
-		builder.InsertInstruction(exitCodeInstr)
-		exitCodeVal := exitCodeInstr.Return()
-
-		execCtx := c.execCtxPtrValue
-		store := builder.AllocateInstruction()
-		store.AsStore(exitCodeVal, execCtx, wazevoapi.ExecutionContextOffsets.ExitCodeOffset.U32())
-		builder.InsertInstruction(store)
-
-		trap := builder.AllocateInstruction()
-		trap.AsTrap(c.execCtxPtrValue)
-		builder.InsertInstruction(trap)
-	}
 }

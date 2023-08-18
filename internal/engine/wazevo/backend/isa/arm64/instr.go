@@ -61,15 +61,22 @@ var defKinds = [numInstructionKinds]defKind{
 	call:            defKindCall,
 	callInd:         defKindCall,
 	ret:             defKindNone,
+	store8:          defKindNone,
+	store16:         defKindNone,
 	store32:         defKindNone,
 	store64:         defKindNone,
-	trapSequence:    defKindNone,
+	exitSequence:    defKindNone,
 	condBr:          defKindNone,
 	br:              defKindNone,
 	cSet:            defKindRD,
 	extend:          defKindRD,
 	fpuCmp:          defKindNone,
+	uLoad8:          defKindRD,
+	uLoad16:         defKindRD,
 	uLoad32:         defKindRD,
+	sLoad8:          defKindRD,
+	sLoad16:         defKindRD,
+	sLoad32:         defKindRD,
 	uLoad64:         defKindRD,
 	fpuLoad32:       defKindRD,
 	fpuLoad64:       defKindRD,
@@ -80,6 +87,9 @@ var defKinds = [numInstructionKinds]defKind{
 	fpuStore64:      defKindNone,
 	fpuStore128:     defKindNone,
 	udf:             defKindNone,
+	cSel:            defKindRD,
+	fpuCSel32:       defKindRD,
+	fpuCSel64:       defKindRD,
 }
 
 // defs returns the list of regalloc.VReg that are defined by the instruction.
@@ -144,15 +154,22 @@ var useKinds = [numInstructionKinds]useKind{
 	call:            useKindCall,
 	callInd:         useKindCallInd,
 	ret:             useKindRet,
+	store8:          useKindRNAMode,
+	store16:         useKindRNAMode,
 	store32:         useKindRNAMode,
 	store64:         useKindRNAMode,
-	trapSequence:    useKindRN,
+	exitSequence:    useKindRN,
 	condBr:          useKindCond,
 	br:              useKindNone,
 	cSet:            useKindNone,
 	extend:          useKindRN,
 	fpuCmp:          useKindRNRM,
+	uLoad8:          useKindAMode,
+	uLoad16:         useKindAMode,
 	uLoad32:         useKindAMode,
+	sLoad8:          useKindAMode,
+	sLoad16:         useKindAMode,
+	sLoad32:         useKindAMode,
 	uLoad64:         useKindAMode,
 	fpuLoad32:       useKindAMode,
 	fpuLoad64:       useKindAMode,
@@ -162,6 +179,9 @@ var useKinds = [numInstructionKinds]useKind{
 	fpuStore128:     useKindRNAMode,
 	loadFpuConst32:  useKindNone,
 	loadFpuConst64:  useKindNone,
+	cSel:            useKindRNRM,
+	fpuCSel32:       useKindRNRM,
+	fpuCSel64:       useKindRNRM,
 }
 
 // uses returns the list of regalloc.VReg that are used by the instruction.
@@ -383,6 +403,21 @@ func (i *instruction) asStore(src operand, amode addressMode, sizeInBits byte) {
 	i.amode = amode
 }
 
+func (i *instruction) asSLoad(dst operand, amode addressMode, sizeInBits byte) {
+	switch sizeInBits {
+	case 8:
+		i.kind = sLoad8
+	case 16:
+		i.kind = sLoad16
+	case 32:
+		i.kind = sLoad32
+	default:
+		panic("BUG")
+	}
+	i.rd = dst
+	i.amode = amode
+}
+
 func (i *instruction) asULoad(dst operand, amode addressMode, sizeInBits byte) {
 	switch sizeInBits {
 	case 8:
@@ -411,9 +446,32 @@ func (i *instruction) asFpuLoad(dst operand, amode addressMode, sizeInBits byte)
 	i.amode = amode
 }
 
-func (i *instruction) asCSst(rd regalloc.VReg, c condFlag) {
+func (i *instruction) asCSet(rd regalloc.VReg, c condFlag) {
 	i.kind = cSet
 	i.rd = operandNR(rd)
+	i.u1 = uint64(c)
+}
+
+func (i *instruction) asCSel(rd, rn, rm operand, c condFlag, _64bit bool) {
+	i.kind = cSel
+	i.rd = rd
+	i.rn = rn
+	i.rm = rm
+	i.u1 = uint64(c)
+	if _64bit {
+		i.u3 = 1
+	}
+}
+
+func (i *instruction) asFpuCSel(rd, rn, rm operand, c condFlag, _64bit bool) {
+	if _64bit {
+		i.kind = fpuCSel64
+	} else {
+		i.kind = fpuCSel32
+	}
+	i.rd = rd
+	i.rn = rn
+	i.rm = rm
 	i.u1 = uint64(c)
 }
 
@@ -492,7 +550,7 @@ func (i *instruction) asFpuCmp(rn, rm operand, is64bit bool) {
 	i.kind = fpuCmp
 	i.rn, i.rm = rn, rm
 	if is64bit {
-		i.u1 = 1
+		i.u3 = 1
 	}
 }
 
@@ -666,23 +724,23 @@ func (i *instruction) String() (str string) {
 	case bitRR:
 		panic("TODO")
 	case uLoad8:
-		panic("TODO")
+		str = fmt.Sprintf("ldrb %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case sLoad8:
-		panic("TODO")
+		str = fmt.Sprintf("ldrsb %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case uLoad16:
-		panic("TODO")
+		str = fmt.Sprintf("ldrh %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case sLoad16:
-		panic("TODO")
+		str = fmt.Sprintf("ldrsh %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case uLoad32:
 		str = fmt.Sprintf("ldr %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case sLoad32:
-		panic("TODO")
+		str = fmt.Sprintf("ldrs %s, %s", formatVRegSized(i.rd.nr(), 32), i.amode.format(32))
 	case uLoad64:
 		str = fmt.Sprintf("ldr %s, %s", formatVRegSized(i.rd.nr(), 64), i.amode.format(64))
 	case store8:
-		panic("TODO")
+		str = fmt.Sprintf("strb %s, %s", formatVRegSized(i.rn.nr(), 32), i.amode.format(8))
 	case store16:
-		panic("TODO")
+		str = fmt.Sprintf("strh %s, %s", formatVRegSized(i.rn.nr(), 32), i.amode.format(16))
 	case store32:
 		str = fmt.Sprintf("str %s, %s", formatVRegSized(i.rn.nr(), 32), i.amode.format(32))
 	case store64:
@@ -698,7 +756,7 @@ func (i *instruction) String() (str string) {
 			formatVRegSized(i.rd.nr(), 64),
 			formatVRegSized(i.rn.nr(), 64))
 	case mov32:
-		panic("TODO")
+		str = fmt.Sprintf("mov %s, %s", formatVRegSized(i.rd.nr(), 32), formatVRegSized(i.rn.nr(), 32))
 	case movZ:
 		size := is64SizeBitToSize(i.u3)
 		str = fmt.Sprintf("movz %s, #%#x, LSL %d", formatVRegSized(i.rd.nr(), size), uint16(i.u1), i.u2*16)
@@ -728,7 +786,13 @@ func (i *instruction) String() (str string) {
 		}
 		str = fmt.Sprintf("%sxt%s %s, %s", signedStr, fromStr, formatVRegSized(i.rd.nr(), toBits), formatVRegSized(i.rn.nr(), 32))
 	case cSel:
-		panic("TODO")
+		size := is64SizeBitToSize(i.u3)
+		str = fmt.Sprintf("csel %s, %s, %s, %s",
+			formatVRegSized(i.rd.nr(), size),
+			formatVRegSized(i.rn.nr(), size),
+			formatVRegSized(i.rm.nr(), size),
+			condFlag(i.u1),
+		)
 	case cSet:
 		str = fmt.Sprintf("cset %s, %s", formatVRegSized(i.rd.nr(), 64), condFlag(i.u1))
 	case cCmpImm:
@@ -776,9 +840,19 @@ func (i *instruction) String() (str string) {
 	case intToFpu:
 		panic("TODO")
 	case fpuCSel32:
-		panic("TODO")
+		str = fmt.Sprintf("fcsel %s, %s, %s, %s",
+			formatVRegSized(i.rd.nr(), 32),
+			formatVRegSized(i.rn.nr(), 32),
+			formatVRegSized(i.rm.nr(), 32),
+			condFlag(i.u1),
+		)
 	case fpuCSel64:
-		panic("TODO")
+		str = fmt.Sprintf("fcsel %s, %s, %s, %s",
+			formatVRegSized(i.rd.nr(), 64),
+			formatVRegSized(i.rn.nr(), 64),
+			formatVRegSized(i.rm.nr(), 64),
+			condFlag(i.u1),
+		)
 	case fpuRound:
 		panic("TODO")
 	case movToFpu:
@@ -872,8 +946,8 @@ func (i *instruction) String() (str string) {
 		panic("TODO")
 	case loadAddr:
 		panic("TODO")
-	case trapSequence:
-		str = fmt.Sprintf("trap_sequence %s", formatVRegSized(i.rn.nr(), 32))
+	case exitSequence:
+		str = fmt.Sprintf("exit_sequence %s", formatVRegSized(i.rn.nr(), 64))
 	case udf:
 		str = "udf"
 	default:
@@ -1056,9 +1130,9 @@ const (
 	jtSequence
 	// loadAddr represents a load address instruction.
 	loadAddr
-	// trapSequence consists of multiple instructions, and exits the execution immediately.
-	// See encodeTrapSequence.
-	trapSequence
+	// exitSequence consists of multiple instructions, and exits the execution immediately.
+	// See encodeExitSequence.
+	exitSequence
 	// UDF is the undefined instruction. For debugging only.
 	udf
 
@@ -1070,8 +1144,8 @@ func (i *instruction) asUDF() {
 	i.kind = udf
 }
 
-func (i *instruction) asTrapSequence(ctx regalloc.VReg) {
-	i.kind = trapSequence
+func (i *instruction) asExitSequence(ctx regalloc.VReg) {
+	i.kind = exitSequence
 	i.rn = operandNR(ctx)
 }
 
@@ -1358,13 +1432,13 @@ func binarySize(begin, end *instruction) (size int64) {
 	return size
 }
 
-const trapSequenceSize = 5 * 4 // 5 instructions as in encodeTrapSequence.
+const exitSequenceSize = 5 * 4 // 5 instructions as in encodeExitSequence.
 
 // size returns the size of the instruction in encoded bytes.
 func (i *instruction) size() int64 {
 	switch i.kind {
-	case trapSequence:
-		return trapSequenceSize // 5 instructions as in encodeTrapSequence.
+	case exitSequence:
+		return exitSequenceSize // 5 instructions as in encodeExitSequence.
 	case nop0:
 		return 0
 	case loadFpuConst32:

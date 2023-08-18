@@ -76,19 +76,23 @@ func (a *abiImpl) init(sig *ssa.Signature) {
 	if len(a.rets) < len(sig.Results) {
 		a.rets = make([]backend.ABIArg, len(sig.Results))
 	}
+	a.rets = a.rets[:len(sig.Results)]
 	a.retStackSize = a.setABIArgs(a.rets, sig.Results)
 	if argsNum := len(sig.Params); len(a.args) < argsNum {
 		a.args = make([]backend.ABIArg, argsNum)
 	}
+	a.args = a.args[:len(sig.Params)]
 	a.argStackSize = a.setABIArgs(a.args, sig.Params)
 
 	// Gather the real registers usages in arg/return.
+	a.retRealRegs = a.retRealRegs[:0]
 	for i := range a.rets {
 		r := &a.rets[i]
 		if r.Kind == backend.ABIArgKindReg {
 			a.retRealRegs = append(a.retRealRegs, r.Reg)
 		}
 	}
+	a.argRealRegs = a.argRealRegs[:0]
 	for i := range a.args {
 		arg := &a.args[i]
 		if arg.Kind == backend.ABIArgKindReg {
@@ -196,8 +200,11 @@ func (a *abiImpl) CalleeGenFunctionArgsToVRegs(args []ssa.Value) {
 
 // CalleeGenVRegsToFunctionReturns implements backend.FunctionABI.
 func (a *abiImpl) CalleeGenVRegsToFunctionReturns(rets []ssa.Value) {
-	for i, ret := range rets {
-		r := &a.rets[i]
+	l := len(rets) - 1
+	for i := range rets {
+		// Reverse order in order to avoid overwriting the stack returns existing in the return registers.
+		ret := rets[l-i]
+		r := &a.rets[l-i]
 		reg := a.m.compiler.VRegOf(ret)
 		if def := a.m.compiler.ValueDefinition(ret); def.IsFromInstr() {
 			// Constant instructions are inlined.
