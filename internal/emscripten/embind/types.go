@@ -91,18 +91,16 @@ type registeredTuple struct {
 }
 
 type registeredTupleElement struct {
-	getterReturnTypeID   int32
-	getterPtr            int32
-	getterSignaturePtr   int32
-	getter               api.Function
-	getterContext        int32
-	setterArgumentTypeID int32
-	setterPtr            int32
-	setterSignaturePtr   int32
-	setter               api.Function
-	setterContext        int32
-	read                 func(ctx context.Context, mod api.Module, ptr int32) (any, error)
-	write                func(ctx context.Context, mod api.Module, ptr int32, o any) error
+	getterReturnType   int32
+	getter             int32
+	getterSignature    int32
+	getterContext      int32
+	setterArgumentType int32
+	setter             int32
+	setterSignature    int32
+	setterContext      int32
+	read               func(ctx context.Context, mod api.Module, ptr int32) (any, error)
+	write              func(ctx context.Context, mod api.Module, ptr int32, o any) error
 }
 
 type registeredObject struct {
@@ -115,10 +113,12 @@ type registeredObject struct {
 type registeredObjectField struct {
 	fieldName          string
 	getterReturnType   int32
-	getter             api.Function
+	getter             int32
+	getterSignature    int32
 	getterContext      int32
 	setterArgumentType int32
-	setter             api.Function
+	setter             int32
+	setterSignature    int32
 	setterContext      int32
 	read               func(ctx context.Context, mod api.Module, ptr int32) (any, error)
 	write              func(ctx context.Context, mod api.Module, ptr int32, o any) error

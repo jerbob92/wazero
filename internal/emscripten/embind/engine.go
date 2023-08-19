@@ -304,7 +304,7 @@ func (e *engine) whenDependentTypesAreResolved(myTypes, dependentTypes []int32, 
 		}
 
 		for i := range myTypes {
-			err := e.registerType(myTypes[i], myTypeConverters[i], nil)
+			err = e.registerType(myTypes[i], myTypeConverters[i], nil)
 			if err != nil {
 				return err
 			}

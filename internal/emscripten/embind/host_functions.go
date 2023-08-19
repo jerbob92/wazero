@@ -103,7 +103,6 @@ var EmbindRegisterVoid = &wasm.HostFunc{
 				argPackAdvance: 0,
 			},
 		}, nil)
-
 		if err != nil {
 			panic(fmt.Errorf("could not register: %w", err))
 		}
@@ -137,6 +136,9 @@ var EmbindRegisterBool = &wasm.HostFunc{
 			trueVal:  api.DecodeI32(stack[3]),
 			falseVal: api.DecodeI32(stack[4]),
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -165,6 +167,9 @@ var EmbindRegisterInteger = &wasm.HostFunc{
 			size:   api.DecodeI32(stack[2]),
 			signed: !strings.Contains(name, "unsigned"),
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -193,6 +198,9 @@ var EmbindRegisterBigInt = &wasm.HostFunc{
 			size:   api.DecodeI32(stack[2]),
 			signed: !strings.HasPrefix(name, "u"),
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -220,6 +228,9 @@ var EmbindRegisterFloat = &wasm.HostFunc{
 			},
 			size: api.DecodeI32(stack[2]),
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -247,6 +258,9 @@ var EmbindRegisterStdString = &wasm.HostFunc{
 			},
 			stdStringIsUTF8: name == "std::string",
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -274,6 +288,9 @@ var EmbindRegisterStdWString = &wasm.HostFunc{
 			},
 			charSize: api.DecodeI32(stack[1]),
 		}, nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -303,6 +320,9 @@ var EmbindRegisterEmval = &wasm.HostFunc{
 		}, &registerTypeOptions{
 			ignoreDuplicateRegistrations: true,
 		})
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -365,6 +385,9 @@ var EmbindRegisterMemoryView = &wasm.HostFunc{
 		}, &registerTypeOptions{
 			ignoreDuplicateRegistrations: true,
 		})
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -455,6 +478,9 @@ var EmbindRegisterEnum = &wasm.HostFunc{
 		}
 
 		err = engine.registerType(rawType, engine.registeredEnums[name], nil)
+		if err != nil {
+			panic(fmt.Errorf("could not register: %w", err))
+		}
 	})},
 }
 
@@ -1576,9 +1602,9 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 			err = engine.whenDependentTypesAreResolved([]int32{}, requiredTypes, func(types []registeredType) ([]registeredType, error) {
 				getterReturnType := types[0]
 
-				getterFunc, err := engine.newInvokeFunc(getterSignature, getter, []api.ValueType{}, []api.ValueType{getterReturnType.NativeType()})
+				getterFunc, err := engine.newInvokeFunc(getterSignature, getter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{getterReturnType.NativeType()})
 				if err != nil {
-					return nil, fmt.Errorf("could not create raw invoke func: %w", err)
+					return nil, fmt.Errorf("could not create _embind_register_class_property getterFunc: %w", err)
 				}
 
 				desc := &classProperty{
@@ -1599,9 +1625,9 @@ var EmbindRegisterClassProperty = &wasm.HostFunc{
 
 				if setter > 0 {
 					setterArgumentType := types[1]
-					setterFunc, err := engine.newInvokeFunc(setterSignature, setter, []api.ValueType{setterArgumentType.NativeType()}, []api.ValueType{})
+					setterFunc, err := engine.newInvokeFunc(setterSignature, setter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, setterArgumentType.NativeType()}, []api.ValueType{})
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("could not create _embind_register_class_property setterFunc: %w", err)
 					}
 
 					desc.set = func(ctx context.Context, mod api.Module, this any, v any) error {
@@ -1720,14 +1746,14 @@ var EmbindRegisterValueArrayElement = &wasm.HostFunc{
 		setterContext := api.DecodeI32(stack[8])
 
 		engine.registeredTuples[rawTupleType].elements = append(engine.registeredTuples[rawTupleType].elements, &registeredTupleElement{
-			getterPtr:            getter,
-			getterSignaturePtr:   getterSignature,
-			getterReturnTypeID:   getterReturnType,
-			getterContext:        getterContext,
-			setterPtr:            setter,
-			setterSignaturePtr:   setterSignature,
-			setterArgumentTypeID: setterArgumentType,
-			setterContext:        setterContext,
+			getter:             getter,
+			getterSignature:    getterSignature,
+			getterReturnType:   getterReturnType,
+			getterContext:      getterContext,
+			setter:             setter,
+			setterSignature:    setterSignature,
+			setterArgumentType: setterArgumentType,
+			setterContext:      setterContext,
 		})
 	})},
 }
@@ -1749,41 +1775,29 @@ var EmbindFinalizeValueArray = &wasm.HostFunc{
 		elements := reg.elements
 		elementsLength := len(elements)
 
-		elementTypes := []int32{}
+		elementTypes := make([]int32, len(elements)*2)
 		for i := range elements {
-			elementTypes = append(elementTypes, elements[i].getterReturnTypeID)
-		}
-
-		for i := range elements {
-			elementTypes = append(elementTypes, elements[i].setterArgumentTypeID)
+			elementTypes[i] = elements[i].getterReturnType
+			elementTypes[i+len(elements)] = elements[i].setterArgumentType
 		}
 
 		err := engine.whenDependentTypesAreResolved([]int32{rawTupleType}, elementTypes, func(types []registeredType) ([]registeredType, error) {
 			for i := range elements {
 				getterReturnType := types[i]
 
-				getterFunc, err := engine.newInvokeFunc(elements[i].getterSignaturePtr, elements[i].getterPtr, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{getterReturnType.NativeType()})
+				getterFunc, err := engine.newInvokeFunc(elements[i].getterSignature, elements[i].getter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{getterReturnType.NativeType()})
 				if err != nil {
 					return nil, fmt.Errorf("could not create getterFunc: %w", err)
 				}
 
-				elements[i].getter = getterFunc
-
-				getter := elements[i].getter
-				getterContext := elements[i].getterContext
-				setterArgumentType := types[i+elementsLength]
-
-				setterFunc, err := engine.newInvokeFunc(elements[i].setterSignaturePtr, elements[i].setterPtr, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, types[1].NativeType()}, []api.ValueType{})
+				setterArgumentType := types[i+len(elements)]
+				setterFunc, err := engine.newInvokeFunc(elements[i].setterSignature, elements[i].setter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, setterArgumentType.NativeType()}, []api.ValueType{})
 				if err != nil {
 					return nil, fmt.Errorf("could not create setterFunc: %w", err)
 				}
 
-				elements[i].setter = setterFunc
-
-				setter := elements[i].setter
-				setterContext := elements[i].setterContext
 				elements[i].read = func(ctx context.Context, mod api.Module, ptr int32) (any, error) {
-					res, err := getter.Call(ctx, api.EncodeI32(getterContext), api.EncodeI32(ptr))
+					res, err := getterFunc.Call(ctx, api.EncodeI32(elements[i].getterContext), api.EncodeI32(ptr))
 					if err != nil {
 						return nil, err
 					}
@@ -1796,7 +1810,7 @@ var EmbindFinalizeValueArray = &wasm.HostFunc{
 						return err
 					}
 
-					_, err = setter.Call(ctx, api.EncodeI32(setterContext), api.EncodeI32(ptr), res)
+					_, err = setterFunc.Call(ctx, api.EncodeI32(elements[i].setterContext), api.EncodeI32(ptr), res)
 					if err != nil {
 						return err
 					}
@@ -1813,6 +1827,7 @@ var EmbindFinalizeValueArray = &wasm.HostFunc{
 			return []registeredType{
 				&arrayType{
 					baseType: baseType{
+						rawType:        rawTupleType,
 						name:           reg.name,
 						argPackAdvance: 8,
 					},
@@ -1910,23 +1925,15 @@ var EmbindRegisterValueObjectField = &wasm.HostFunc{
 			panic(fmt.Errorf("could not read field name: %w", err))
 		}
 
-		getterFunc, err := engine.newInvokeFunc(getterSignature, getter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32})
-		if err != nil {
-			panic(fmt.Errorf("could not create getterFunc: %w", err))
-		}
-
-		setterFunc, err := engine.newInvokeFunc(setterSignature, setter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{})
-		if err != nil {
-			panic(fmt.Errorf("could not create setterFunc: %w", err))
-		}
-
 		engine.registeredObjects[structType].fields = append(engine.registeredObjects[structType].fields, &registeredObjectField{
 			fieldName:          fieldName,
 			getterReturnType:   getterReturnType,
-			getter:             getterFunc,
+			getter:             getter,
+			getterSignature:    getterSignature,
 			getterContext:      getterContext,
 			setterArgumentType: setterArgumentType,
-			setter:             setterFunc,
+			setter:             setter,
+			setterSignature:    setterSignature,
 			setterContext:      setterContext,
 		})
 	})},
@@ -1948,28 +1955,34 @@ var EmbindFinalizeValueObject = &wasm.HostFunc{
 		delete(engine.registeredObjects, structType)
 		fieldRecords := reg.fields
 
-		fieldTypes := []int32{}
+		fieldTypes := make([]int32, len(fieldRecords)*2)
 		for i := range fieldRecords {
-			fieldTypes = append(fieldTypes, fieldRecords[i].getterReturnType)
-			fieldTypes = append(fieldTypes, fieldRecords[i].setterArgumentType)
+			fieldTypes[i] = fieldRecords[i].getterReturnType
+			fieldTypes[i+len(fieldRecords)] = fieldRecords[i].setterArgumentType
 		}
 
 		err := engine.whenDependentTypesAreResolved([]int32{structType}, fieldTypes, func(types []registeredType) ([]registeredType, error) {
 			for i := range fieldRecords {
 				getterReturnType := types[i]
-				getter := fieldRecords[i].getter
-				getterContext := fieldRecords[i].getterContext
-				setterArgumentType := types[i+len(fieldRecords)]
-				setter := fieldRecords[i].setter
-				setterContext := fieldRecords[i].setterContext
+				getterFunc, err := engine.newInvokeFunc(fieldRecords[i].getterSignature, fieldRecords[i].getter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{getterReturnType.NativeType()})
+				if err != nil {
+					panic(fmt.Errorf("could not create getterFunc: %w", err))
+				}
 
 				fieldRecords[i].read = func(ctx context.Context, mod api.Module, ptr int32) (any, error) {
-					res, err := getter.Call(ctx, api.EncodeI32(getterContext), api.EncodeI32(ptr))
+					res, err := getterFunc.Call(ctx, api.EncodeI32(fieldRecords[i].getterContext), api.EncodeI32(ptr))
 					if err != nil {
 						return nil, err
 					}
 					return getterReturnType.FromWireType(ctx, mod, res[0])
 				}
+
+				setterArgumentType := types[i+len(fieldRecords)]
+				setterFunc, err := engine.newInvokeFunc(fieldRecords[i].setterSignature, fieldRecords[i].setter, []api.ValueType{api.ValueTypeI32, api.ValueTypeI32, setterArgumentType.NativeType()}, []api.ValueType{})
+				if err != nil {
+					panic(fmt.Errorf("could not create setterFunc: %w", err))
+				}
+
 				fieldRecords[i].write = func(ctx context.Context, mod api.Module, ptr int32, o any) error {
 					destructors := &[]*destructorFunc{}
 					res, err := setterArgumentType.ToWireType(ctx, mod, destructors, o)
@@ -1977,7 +1990,7 @@ var EmbindFinalizeValueObject = &wasm.HostFunc{
 						return err
 					}
 
-					_, err = setter.Call(ctx, api.EncodeI32(setterContext), api.EncodeI32(ptr), res)
+					_, err = setterFunc.Call(ctx, api.EncodeI32(fieldRecords[i].setterContext), api.EncodeI32(ptr), res)
 					if err != nil {
 						return err
 					}
@@ -1994,6 +2007,7 @@ var EmbindFinalizeValueObject = &wasm.HostFunc{
 			return []registeredType{
 				&objectType{
 					baseType: baseType{
+						rawType:        structType,
 						name:           reg.name,
 						argPackAdvance: 8,
 					},
