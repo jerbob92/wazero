@@ -1097,7 +1097,7 @@ var EmvalRegisterClass = &wasm.HostFunc{
 
 		var upcastFunc api.Function
 		if upcast > 0 {
-			upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
+			upcastFunc, err = engine.newInvokeFunc(upcastSignature, upcast, []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32})
 			if err != nil {
 				panic(fmt.Errorf("could not read upcast: %w", err))
 			}
@@ -1105,7 +1105,7 @@ var EmvalRegisterClass = &wasm.HostFunc{
 
 		var downcastFunc api.Function
 		if downcast > 0 {
-			downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast, []api.ValueType{}, []api.ValueType{api.ValueTypeI32})
+			downcastFunc, err = engine.newInvokeFunc(downcastSignature, downcast, []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32})
 			if err != nil {
 				panic(fmt.Errorf("could not read downcast: %w", err))
 			}
@@ -1155,7 +1155,7 @@ var EmvalRegisterClass = &wasm.HostFunc{
 			engine.registeredClasses[name].downcast = downcastFunc
 
 			if baseClassRawType > 0 {
-				engine.registeredClasses[name].baseClass = resolvedTypes[0].(*classType)
+				engine.registeredClasses[name].baseClass = resolvedTypes[0].(*registeredPointerType).registeredClass
 				if engine.registeredClasses[name].baseClass.derivedClasses == nil {
 					engine.registeredClasses[name].baseClass.derivedClasses = []*classType{engine.registeredClasses[name]}
 				} else {
