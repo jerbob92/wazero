@@ -663,9 +663,9 @@ func (ce *callEngine) recoverOnCall(ctx context.Context, m *wasm.ModuleInstance,
 	for i := 0; i < frameCount; i++ {
 		frame := ce.popFrame()
 		f := frame.f
-		def := f.definition()
 
 		if builder != nil {
+			def := f.definition()
 			var sources []string
 			if parent := frame.f.parent; parent.body != nil && len(parent.offsetsInWasmBinary) > 0 {
 				sources = parent.source.DWARFLines.Line(parent.offsetsInWasmBinary[frame.pc])

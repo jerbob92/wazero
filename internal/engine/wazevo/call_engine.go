@@ -170,8 +170,8 @@ func (c *callEngine) addFrame(builder wasmdebug.ErrorBuilder, addr uintptr) (def
 
 	if cm != nil {
 		index := cm.functionIndexOf(addr)
+		def = cm.module.FunctionDefinition(cm.module.ImportFunctionCount + index)
 		if builder != nil {
-			def = cm.module.FunctionDefinition(cm.module.ImportFunctionCount + index)
 			var sources []string
 			if dw := cm.module.DWARFLines; dw != nil {
 				sourceOffset := cm.getSourceOffset(addr)
