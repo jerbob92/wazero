@@ -4,6 +4,8 @@ package sys
 import (
 	"context"
 	"fmt"
+
+	"github.com/tetratelabs/wazero/internal/internalapi"
 )
 
 // These two special exit codes are reserved by wazero for context Cancel and Timeout integrations.
@@ -80,4 +82,12 @@ func (e *ExitError) Is(err error) bool {
 		return true
 	}
 	return false
+}
+
+// IntentionalError is an error interface that can be used by intentional
+// internal errors that should skip default error handling.
+type IntentionalError interface {
+	internalapi.WazeroOnly
+	error
+	IsIntentional() bool
 }
