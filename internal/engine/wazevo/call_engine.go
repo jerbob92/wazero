@@ -239,12 +239,12 @@ func (c *callEngine) callWithStack(ctx context.Context, paramResultStack []uint6
 			}
 
 			var listeners []listenerForAbort
-			var builder wasmdebug.ErrorBuilder
 
 			// Only create a builder when the error is not intentional.
 			// We should not collect debug and DWARF information for
 			// intentional errors.
 			intentionalError, isIntentionalError := r.(sys.IntentionalError)
+			var builder wasmdebug.ErrorBuilder
 			if !isIntentionalError {
 				builder = wasmdebug.NewErrorBuilder()
 			}

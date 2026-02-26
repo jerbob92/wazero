@@ -645,11 +645,15 @@ func (ce *callEngine) recoverOnCall(ctx context.Context, m *wasm.ModuleInstance,
 		panic(s)
 	}
 
+	// Only create a builder when the error is not intentional.
 	// We should not collect debug and DWARF information for
 	// intentional errors.
 	intentionalError, isIntentionalError := v.(sys.IntentionalError)
+	var builder wasmdebug.ErrorBuilder
+	if !isIntentionalError {
+		builder = wasmdebug.NewErrorBuilder()
+	}
 
-	builder := wasmdebug.NewErrorBuilder()
 	frameCount := len(ce.frames)
 	functionListeners := make([]functionListenerInvocation, 0, 16)
 
@@ -661,7 +665,7 @@ func (ce *callEngine) recoverOnCall(ctx context.Context, m *wasm.ModuleInstance,
 		f := frame.f
 		def := f.definition()
 
-		if !isIntentionalError {
+		if builder != nil {
 			var sources []string
 			if parent := frame.f.parent; parent.body != nil && len(parent.offsetsInWasmBinary) > 0 {
 				sources = parent.source.DWARFLines.Line(parent.offsetsInWasmBinary[frame.pc])
