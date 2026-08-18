@@ -30,3 +30,13 @@ func adjustClonedStack(oldsp, oldTop, sp, fp, top uintptr) {
 	//  so no need to adjustment on arm64. However, when we make it absolute, which in my opinion is better perf-wise
 	//  at the expense of slightly costly stack growth, we need to adjust the pushed frame pointers.
 }
+
+// trampolineWindowBytes returns the size of the trampoline-owned stack
+// region at the given Go-call stack pointer: 16 bytes of frame info
+// (frame_size, sliceSize), the arg/ret area (frame_size, read from the
+// first slot), and 16 bytes of return address + size_of_arg_ret. See the
+// layout in backend/isa/arm64/abi_go_call.go.
+func trampolineWindowBytes(sp *uint64) uintptr {
+	frameSize := *sp
+	return uintptr(16 + frameSize + 16)
+}

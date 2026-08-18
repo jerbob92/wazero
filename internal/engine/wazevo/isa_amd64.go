@@ -28,3 +28,13 @@ func goCallStackView(stackPointerBeforeGoCall *uint64) []uint64 {
 func adjustClonedStack(oldsp, oldTop, sp, fp, top uintptr) {
 	amd64.AdjustClonedStack(oldsp, oldTop, sp, fp, top)
 }
+
+// trampolineWindowBytes returns the size of the trampoline-owned stack
+// region at the given Go-call stack pointer: the SizeInBytes slot plus the
+// arg/ret area (the return address is stored in the execution context on
+// amd64, not on the stack). See the layout in
+// backend/isa/amd64/stack.go GoCallStackView.
+func trampolineWindowBytes(sp *uint64) uintptr {
+	sizeInBytes := *sp
+	return uintptr(8 + sizeInBytes)
+}
