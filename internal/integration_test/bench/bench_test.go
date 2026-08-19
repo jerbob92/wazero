@@ -5,11 +5,14 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"fmt"
+	"os"
 	"runtime"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
+	_ "github.com/tetratelabs/wazero/experimental/guardsig"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/internal/platform"
 )
@@ -17,7 +20,13 @@ import (
 type arbitrary struct{}
 
 // testCtx is an arbitrary, non-default context. Non-nil also prevents linter errors.
-var testCtx = context.WithValue(context.Background(), arbitrary{}, "arbitrary")
+var testCtx = func() context.Context {
+	ctx := context.WithValue(context.Background(), arbitrary{}, "arbitrary")
+	if os.Getenv("WAZERO_GUARD_MEMORY") == "1" {
+		ctx = experimental.WithGuardPageMemory(ctx)
+	}
+	return ctx
+}()
 
 // caseWasm was compiled from TinyGo testdata/case.go
 //
