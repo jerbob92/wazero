@@ -64,6 +64,12 @@ type MemoryInstance struct {
 	ownerModuleEngine ModuleEngine
 
 	expBuffer experimental.LinearMemory
+
+	// Unsafe is true when expBuffer implements experimental.UnsafeLinearMemory,
+	// meaning it independently guarantees safety for a module compiled under
+	// experimental.WithUncheckedMemoryAccess. Pairing such a module with a
+	// memory instance where this is false fails instantiation.
+	Unsafe bool
 }
 
 // NewMemoryInstance creates a new instance based on the parameters in the SectionIDMemory.
@@ -74,10 +80,12 @@ func NewMemoryInstance(memSec *Memory, allocator experimental.MemoryAllocator, m
 
 	var buffer []byte
 	var expBuffer experimental.LinearMemory
+	var unsafeMem bool
 	if allocator != nil {
 		expBuffer = allocator.Allocate(capBytes, maxBytes)
 		buffer = expBuffer.Reallocate(minBytes)
 		_ = buffer[:minBytes] // Bounds check that the minimum was allocated.
+		_, unsafeMem = expBuffer.(experimental.UnsafeLinearMemory)
 	} else if memSec.IsShared {
 		// Shared memory needs a fixed buffer, so allocate with the maximum size.
 		//
@@ -93,6 +101,7 @@ func NewMemoryInstance(memSec *Memory, allocator experimental.MemoryAllocator, m
 		buffer = make([]byte, minBytes, capBytes)
 	}
 	return &MemoryInstance{
+		Unsafe:            unsafeMem,
 		Buffer:            buffer,
 		Min:               memSec.Min,
 		Cap:               memoryBytesNumToPages(uint64(cap(buffer))),

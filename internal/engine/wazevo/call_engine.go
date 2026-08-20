@@ -49,6 +49,11 @@ type (
 		// pendingException holds the most recently caught exception, so handler
 		// code can read its params after re-entry.
 		pendingException *wasm.Exception
+		// guardStackLo is the base address of the stack range currently
+		// registered with the process's experimental.GuardFaultHandler (0 if
+		// none). Only used when the module was compiled with
+		// experimental.WithUncheckedMemoryAccess.
+		guardStackLo uintptr
 	}
 
 	// tryHandler records the state at a try_table entry for exception handling.
@@ -171,6 +176,46 @@ func (c *callEngine) init() {
 		c.execCtx.stackBottomPtr = &c.stack[0]
 	}
 	c.execCtxPtr = uintptr(unsafe.Pointer(&c.execCtx))
+	c.updateGuardStackRegistration()
+}
+
+// updateGuardStackRegistration (re)registers this call engine's stack range
+// with the process's experimental.GuardFaultHandler, so a hardware fault
+// raised by the checkless code running on this stack can be redirected to
+// the guard-fault exit sequence with the right execution context. Must be
+// called whenever c.stack changes identity. No-op unless the module was
+// compiled with experimental.WithUncheckedMemoryAccess (which implies a
+// handler is registered).
+func (c *callEngine) updateGuardStackRegistration() {
+	if c.parent == nil || c.parent.parent == nil {
+		return // only happens in unit tests constructing a bare callEngine.
+	}
+	cm := c.parent.parent
+	if !cm.uncheckedMemory {
+		return
+	}
+	lo := uintptr(unsafe.Pointer(&c.stack[0]))
+	hi := lo + uintptr(len(c.stack))
+	if c.guardStackLo != 0 {
+		if c.guardStackLo == lo {
+			return
+		}
+		experimental.UnregisterGuardCallStack(c.guardStackLo)
+	} else {
+		// First registration: arrange for deregistration when this call
+		// engine is garbage collected.
+		runtime.SetFinalizer(c, func(c *callEngine) {
+			if c.guardStackLo != 0 {
+				experimental.UnregisterGuardCallStack(c.guardStackLo)
+			}
+		})
+	}
+	exitSeq := uintptr(unsafe.Pointer(cm.parent.sharedFunctions.guardFaultExitAddress))
+	if !experimental.RegisterGuardCallStack(lo, hi, c.execCtxPtr, exitSeq) {
+		c.guardStackLo = 0
+		panic("wazero: the registered GuardFaultHandler's stack registry is full; too many concurrent call engines running unchecked memory access")
+	}
+	c.guardStackLo = lo
 }
 
 // alignedStackTop returns 16-bytes aligned stack top of given stack.
@@ -695,6 +740,7 @@ func (c *callEngine) doHandleException(exn *wasm.Exception) bool {
 				spp := *(**uint64)(unsafe.Pointer(&h.sp))
 				c.stack = h.stack
 				c.stackTop = h.top
+				c.updateGuardStackRegistration()
 				ec := &c.execCtx
 				ec.stackBottomPtr = &c.stack[0]
 				ec.stackPointerBeforeGoCall = spp
@@ -755,6 +801,7 @@ func (c *callEngine) growStack() (newSP, newFP uintptr, err error) {
 	newLen := 2*currentLen + c.execCtx.stackGrowRequiredSize + 16 // Stack might be aligned to 16 bytes, so add 16 bytes just in case.
 	newSP, newFP, c.stackTop, c.stack = c.cloneStack(newLen)
 	c.execCtx.stackBottomPtr = &c.stack[0]
+	c.updateGuardStackRegistration()
 	return
 }
 
@@ -896,6 +943,7 @@ func (s *snapshot) doRestore() {
 	c := s.c
 	c.stack = s.stack
 	c.stackTop = s.top
+	c.updateGuardStackRegistration()
 	ec := &c.execCtx
 	ec.stackBottomPtr = &c.stack[0]
 	ec.stackPointerBeforeGoCall = spp
