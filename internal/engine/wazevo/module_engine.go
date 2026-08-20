@@ -263,6 +263,15 @@ func (m *moduleEngine) putLocalMemory() {
 	var b uint64
 	if len(mem.Buffer) > 0 {
 		b = uint64(uintptr(unsafe.Pointer(&mem.Buffer[0])))
+	} else if mem.Unsafe {
+		// An unsafe (e.g. guard-page backed) memory must publish its
+		// (stable) reservation base even when currently empty: without
+		// bounds checks the generated code dereferences base+addr directly,
+		// and the fault address must land inside the reservation to be
+		// recognized as a guest out-of-bounds access. The buffer always
+		// aliases the reservation, so its data pointer is the base even at
+		// length zero.
+		b = uint64(uintptr(unsafe.Pointer(unsafe.SliceData(mem.Buffer))))
 	}
 	binary.LittleEndian.PutUint64(m.opaque[offset:], b)
 	binary.LittleEndian.PutUint64(m.opaque[offset+8:], s)

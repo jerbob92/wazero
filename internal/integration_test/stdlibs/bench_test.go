@@ -13,14 +13,26 @@ import (
 	"testing"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/experimental"
+	"github.com/tetratelabs/wazero/experimental/guardpage"
+	_ "github.com/tetratelabs/wazero/experimental/guardsig"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/internal/testing/require"
 	"github.com/tetratelabs/wazero/sys"
 )
 
+func benchCtx() context.Context {
+	ctx := context.Background()
+	if os.Getenv("WAZERO_GUARD_MEMORY") == "1" {
+		ctx = experimental.WithUncheckedMemoryAccess(ctx)
+		ctx = experimental.WithMemoryAllocator(ctx, guardpage.Allocator)
+	}
+	return ctx
+}
+
 func BenchmarkZig(b *testing.B) {
 	c := wazero.NewRuntimeConfigCompiler()
-	runtBenches(b, context.Background(), c, zigTestCase)
+	runtBenches(b, benchCtx(), c, zigTestCase)
 }
 
 func BenchmarkWasip1(b *testing.B) {

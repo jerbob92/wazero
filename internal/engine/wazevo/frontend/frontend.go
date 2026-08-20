@@ -31,6 +31,10 @@ type Compiler struct {
 	refFuncSig             ssa.Signature
 	memmoveSig             ssa.Signature
 	ensureTermination      bool
+	// memoryUnchecked is true when the module was compiled under
+	// experimental.WithUncheckedMemoryAccess, so per-access bounds checks
+	// can be omitted (see memOpSetup).
+	memoryUnchecked bool
 
 	// Followings are reset by per function.
 
@@ -110,13 +114,14 @@ type (
 var knownSafeBoundsAtTheEndOfBlockNil = wazevoapi.NewNilVarLength[knownSafeBoundWithID]()
 
 // NewFrontendCompiler returns a frontend Compiler.
-func NewFrontendCompiler(m *wasm.Module, ssaBuilder ssa.Builder, offset *wazevoapi.ModuleContextOffsetData, ensureTermination bool, listenerOn bool, sourceInfo bool) *Compiler {
+func NewFrontendCompiler(m *wasm.Module, ssaBuilder ssa.Builder, offset *wazevoapi.ModuleContextOffsetData, ensureTermination bool, listenerOn bool, sourceInfo bool, memoryUnchecked bool) *Compiler {
 	c := &Compiler{
 		m:                                 m,
 		ssaBuilder:                        ssaBuilder,
 		br:                                bytes.NewReader(nil),
 		offset:                            offset,
 		ensureTermination:                 ensureTermination,
+		memoryUnchecked:                   memoryUnchecked,
 		needSourceOffsetInfo:              sourceInfo,
 		tryTableMetadata:                  &localTryTableMetadata{},
 		varLengthKnownSafeBoundWithIDPool: wazevoapi.NewVarLengthPool[knownSafeBoundWithID](),

@@ -18,6 +18,7 @@ import (
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/frontend"
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/ssa"
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/wazevoapi"
+	"github.com/tetratelabs/wazero/internal/expctxkeys"
 	"github.com/tetratelabs/wazero/internal/filecache"
 	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/version"
@@ -45,6 +46,11 @@ type (
 		// The followings are reused for compiling shared functions.
 		machine backend.Machine
 		be      backend.Compiler
+
+		// uncheckedMemory is true when experimental.WithUncheckedMemoryAccess
+		// was requested and a experimental.GuardFaultHandler is registered,
+		// letting the compiler omit per-access memory bounds checks.
+		uncheckedMemory bool
 	}
 
 	sharedFunctions struct {
@@ -76,7 +82,12 @@ type (
 		tryTableEnterAddress *byte
 		// tryTableLeaveAddress is the address of try_table leave trampoline.
 		tryTableLeaveAddress *byte
-		listenerTrampolines  listenerTrampolines
+		// guardFaultExitAddress is the address of the guard-fault exit sequence:
+		// a registered experimental.GuardFaultHandler redirects a thread that
+		// faulted on an UnsafeLinearMemory access here to raise the
+		// out-of-bounds trap.
+		guardFaultExitAddress *byte
+		listenerTrampolines   listenerTrampolines
 	}
 
 	listenerTrampolines = map[*wasm.FunctionType]struct {
@@ -93,6 +104,7 @@ type (
 		parent                    *engine
 		module                    *wasm.Module
 		ensureTermination         bool
+		uncheckedMemory           bool
 		listeners                 []experimental.FunctionListener
 		listenerBeforeTrampolines []*byte
 		listenerAfterTrampolines  []*byte
@@ -130,7 +142,14 @@ var _ wasm.Engine = (*engine)(nil)
 func NewEngine(ctx context.Context, _ api.CoreFeatures, fc filecache.Cache) wasm.Engine {
 	machine := newMachine()
 	be := backend.NewCompiler(ctx, machine, ssa.NewBuilder())
+	uncheckedMemory, _ := ctx.Value(expctxkeys.UncheckedMemoryAccessKey{}).(bool)
+	// Checkless code generation additionally requires a registered
+	// experimental.GuardFaultHandler: without one able to redirect a fault
+	// back into the compiled trap-exit sequence, we keep generating explicit
+	// bounds checks.
+	uncheckedMemory = uncheckedMemory && experimental.GuardFaultHandlerInstalled()
 	e := &engine{
+		uncheckedMemory: uncheckedMemory,
 		compiledModules: make(map[wasm.ModuleID]*compiledModuleWithCount),
 		setFinalizer:    runtime.SetFinalizer,
 		machine:         machine,
@@ -234,6 +253,7 @@ func (e *engine) compileModule(ctx context.Context, module *wasm.Module, listene
 	cm := &compiledModule{
 		offsets: wazevoapi.NewModuleContextOffsetData(module, withListener), parent: e, module: module,
 		ensureTermination: ensureTermination,
+		uncheckedMemory:   e.uncheckedMemory,
 		executables:       &executables{},
 	}
 
@@ -263,7 +283,7 @@ func (e *engine) compileModule(ctx context.Context, module *wasm.Module, listene
 
 	if workers := experimental.GetCompilationWorkers(ctx); workers <= 1 {
 		// Compile with a single goroutine.
-		fe := frontend.NewFrontendCompiler(module, ssaBuilder, &cm.offsets, ensureTermination, withListener, needSourceInfo)
+		fe := frontend.NewFrontendCompiler(module, ssaBuilder, &cm.offsets, ensureTermination, withListener, needSourceInfo, e.uncheckedMemory)
 
 		for i := range module.CodeSection {
 			if wazevoapi.DeterministicCompilationVerifierEnabled {
@@ -317,7 +337,7 @@ func (e *engine) compileModule(ctx context.Context, module *wasm.Module, listene
 				ssaBuilder := ssa.NewBuilder()
 				be := backend.NewCompiler(ctx, machine, ssaBuilder)
 				fe := frontend.NewFrontendCompiler(
-					module, ssaBuilder, &cm.offsets, ensureTermination, withListener, needSourceInfo).
+					module, ssaBuilder, &cm.offsets, ensureTermination, withListener, needSourceInfo, e.uncheckedMemory).
 					WithTryTableMetadata(sharedTTM)
 
 				for {
@@ -739,6 +759,15 @@ func (e *engine) NewModuleEngine(m *wasm.Module, mi *wasm.ModuleInstance) (wasm.
 	me.module = mi
 	me.listeners = compiled.listeners
 
+	// A module compiled without per-access bounds checks must only run
+	// against a memory instance whose allocator declares it safe for that;
+	// refuse to pair otherwise.
+	if compiled.uncheckedMemory && mi.MemoryInstance != nil && !mi.MemoryInstance.Unsafe {
+		return nil, errors.New("module was compiled with unchecked memory access " +
+			"(experimental.WithUncheckedMemoryAccess) but the memory instance's allocator " +
+			"does not implement experimental.UnsafeLinearMemory")
+	}
+
 	if m.IsHostModule {
 		me.opaque = buildHostModuleOpaque(m, compiled.listeners)
 		me.opaquePtr = &me.opaque[0]
@@ -753,7 +782,7 @@ func (e *engine) NewModuleEngine(m *wasm.Module, mi *wasm.ModuleInstance) (wasm.
 }
 
 func (e *engine) compileSharedFunctions() {
-	var sizes [12]int
+	var sizes [13]int
 	var trampolines []byte
 
 	addTrampoline := func(i int, buf []byte) {
@@ -853,6 +882,9 @@ func (e *engine) compileSharedFunctions() {
 			Results: []ssa.Type{},
 		}, false))
 
+	e.be.Init()
+	addTrampoline(12, e.machine.CompileGuardFaultExitSequence())
+
 	fns := &sharedFunctions{
 		executable:          mmapExecutable(trampolines),
 		listenerTrampolines: make(listenerTrampolines),
@@ -883,6 +915,8 @@ func (e *engine) compileSharedFunctions() {
 	fns.tryTableEnterAddress = &fns.executable[offset]
 	offset += sizes[10]
 	fns.tryTableLeaveAddress = &fns.executable[offset]
+	offset += sizes[11]
+	fns.guardFaultExitAddress = &fns.executable[offset]
 
 	if wazevoapi.PerfMapEnabled {
 		wazevoapi.PerfMap.AddEntry(uintptr(unsafe.Pointer(fns.memoryGrowAddress)), uint64(sizes[0]), "memory_grow_trampoline")
