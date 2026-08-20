@@ -9,6 +9,7 @@ import (
 	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/experimental/guardpage"
 	"github.com/tetratelabs/wazero/experimental/guardsig"
+	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/testing/binaryencoding"
 	"github.com/tetratelabs/wazero/internal/testing/require"
 	"github.com/tetratelabs/wazero/internal/wasm"
@@ -43,6 +44,9 @@ func testModule() []byte {
 }
 
 func TestAllocator_traps(t *testing.T) {
+	if !platform.CompilerSupported() {
+		t.Skip("optimizing compiler unavailable (e.g. exec-mmap not permitted in this sandbox)")
+	}
 	if !guardpage.Supported || !guardsig.Supported() {
 		t.Skip("guard-page reservation or fault handler unavailable")
 	}
@@ -95,10 +99,15 @@ func TestAllocator_traps(t *testing.T) {
 
 // TestAllocator_uncheckedWithoutHandler verifies that
 // WithUncheckedMemoryAccess with no experimental.GuardFaultHandler installed
-// silently falls back to bounds-checked codegen — this test always runs, on
-// any platform, including with cgo disabled, and does not depend on
-// guardsig having been able to install its handler.
+// silently falls back to bounds-checked codegen. Runs whenever the
+// optimizing compiler is usable (see platform.CompilerSupported, which
+// probes exec-mmap rather than just checking GOARCH — this must be skipped,
+// not asserted, in sandboxes that disallow it) and no handler happens to be
+// installed in this test binary, including with cgo disabled.
 func TestAllocator_uncheckedWithHandlerAbsent(t *testing.T) {
+	if !platform.CompilerSupported() {
+		t.Skip("optimizing compiler unavailable (e.g. exec-mmap not permitted in this sandbox)")
+	}
 	if experimental.GuardFaultHandlerInstalled() {
 		t.Skip("a GuardFaultHandler is installed in this test binary (guardsig linked and functional); nothing to verify here")
 	}
